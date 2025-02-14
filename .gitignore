@@ -132,3 +132,6 @@ dmypy.json
 
 # Backups
 *~
+
+# Actual configuration
+paperless-automation.toml

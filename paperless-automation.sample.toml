@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2024 Diego Elio Pettenò
+#
+# SPDX-License-Identifier: 0BSD
+
+url = "https://paperless.example.com/"
+username = "automation"
+password = "robot1"
+
+object_owner = "automation"
+all_access_group = "Family"
+
+identified_tag = "identified"
+
+inbox_tag = "To Be Reviewed"
+unsorted_storage_path = "Unsorted"
+
+scanned_tag = "Scanned"
+scanned_storage_path = "Scanned"
+scan_software = [
+  "PaperPort",
+]
