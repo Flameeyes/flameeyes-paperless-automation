@@ -28,19 +28,19 @@ def lookup_account_custom_fields(
     account_name_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._ACCOUNT_HOLDER
+        if custom_field.name == DefaultCustomField.ACCOUNT_HOLDER
     )
 
     account_number_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._ACCOUNT_NUMBER
+        if custom_field.name == DefaultCustomField.ACCOUNT_NUMBER
     )
 
     document_number_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._DOCUMENT_NUMBER
+        if custom_field.name == DefaultCustomField.DOCUMENT_NUMBER
     )
 
     if any(
@@ -48,7 +48,7 @@ def lookup_account_custom_fields(
         for field in (account_name_field, account_number_field, document_number_field)
     ):
         raise ObjectNotFound(
-            f"Unable to find custom fields '{DefaultCustomField._ACCOUNT_HOLDER}', '{DefaultCustomField._ACCOUNT_NUMBER}', or '{DefaultCustomField._DOCUMENT_NUMBER}'"
+            f"Unable to find custom fields '{DefaultCustomField.ACCOUNT_HOLDER}', '{DefaultCustomField.ACCOUNT_NUMBER}', or '{DefaultCustomField.DOCUMENT_NUMBER}'"
         )
 
     assert account_name_field
@@ -66,27 +66,27 @@ def ensure_account_custom_fields(
     account_name_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._ACCOUNT_HOLDER
+        if custom_field.name == DefaultCustomField.ACCOUNT_HOLDER
     )
 
     account_number_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._ACCOUNT_NUMBER
+        if custom_field.name == DefaultCustomField.ACCOUNT_NUMBER
     )
 
     document_number_field = only(
         custom_field
         for custom_field in all_custom_fields
-        if custom_field.name == DefaultCustomField._DOCUMENT_NUMBER
+        if custom_field.name == DefaultCustomField.DOCUMENT_NUMBER
     )
 
     if account_name_field is None:
-        s.new_custom_field(name=DefaultCustomField._ACCOUNT_HOLDER, data_type="string")
+        s.new_custom_field(name=DefaultCustomField.ACCOUNT_HOLDER, data_type="string")
     if account_number_field is None:
-        s.new_custom_field(name=DefaultCustomField._ACCOUNT_NUMBER, data_type="string")
+        s.new_custom_field(name=DefaultCustomField.ACCOUNT_NUMBER, data_type="string")
     if document_number_field is None:
-        s.new_custom_field(name=DefaultCustomField._DOCUMENT_NUMBER, data_type="string")
+        s.new_custom_field(name=DefaultCustomField.DOCUMENT_NUMBER, data_type="string")
 
     return lookup_account_custom_fields(s)
 
