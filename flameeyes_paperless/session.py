@@ -194,12 +194,18 @@ class PaperlessSession(contextlib.AbstractContextManager):
         )
 
     def _get_objects(
-        self, object_type: ObjectType, full_permissions: bool = False
+        self,
+        object_type: ObjectType,
+        full_permissions: bool = False,
+        order_fields: str | None = None,
     ) -> Iterator[object]:
         starting_path = f"/api/{object_type}/"
         params = {}
         if full_permissions:
             params["full_perms"] = "true"
+
+        if order_fields:
+            params["ordering"] = order_fields
 
         resp = self._get(starting_path, params)
         yield from self._extract_objects(object_type, resp)
@@ -339,7 +345,9 @@ class PaperlessSession(contextlib.AbstractContextManager):
         )
 
     def documents(self, full_permissions: bool = False) -> Iterator[Document]:
-        return self._get_objects(ObjectType.DOCUMENT, full_permissions=full_permissions)
+        return self._get_objects(
+            ObjectType.DOCUMENT, full_permissions=full_permissions, order_fields="id"
+        )
 
     def lookup_document(self, document_id: int) -> Document:
         resp = self._get(f"/api/documents/{document_id}/", {})
