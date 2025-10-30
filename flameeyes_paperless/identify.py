@@ -59,7 +59,7 @@ def identify_document(
         LOGGER.warning(f"Filename found for '{doc.title}' ({doc.id}) is invalid: {e}")
         return None
 
-    doc.created_date = result.date.strftime("%Y-%m-%d")
+    doc.created = result.date.strftime("%Y-%m-%d")
 
     account_holder_name = " & ".join(result.account_holder)
 
