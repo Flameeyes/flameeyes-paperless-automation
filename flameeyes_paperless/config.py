@@ -51,6 +51,9 @@ class Config:
     def lookup_correspondent(self, correspondent: str) -> str:
         return self.aliases.get("correspondent", {}).get(correspondent, correspondent)
 
+    def lookup_document_type(self, document_type: str) -> str:
+        return self.aliases.get("document_type", {}).get(document_type, document_type)
+
     @classmethod
     def from_file(cls) -> Self:
         toml_config = tomllib.load(CONFIG_FILE.open("rb"))

@@ -51,6 +51,7 @@ def identify_document(
     )
     result.account_holder = tuple(normalized_account_holders)
     result.service_name = session.config.lookup_correspondent(result.service_name)
+    result.document_type = session.config.lookup_document_type(result.document_type)
 
     try:
         doc.title = str(result.render_filename(True, True)).removesuffix(".pdf")
