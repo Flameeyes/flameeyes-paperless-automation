@@ -99,7 +99,7 @@ class PaperlessSession(contextlib.AbstractContextManager):
         all_access_group = self.default_access_group
 
         return Permission(
-            view=UsersAndGroups(users=[], groups=[]),
+            view=UsersAndGroups(users=[], groups=[all_access_group.id]),
             change=UsersAndGroups(users=[], groups=[all_access_group.id]),
         )
 
