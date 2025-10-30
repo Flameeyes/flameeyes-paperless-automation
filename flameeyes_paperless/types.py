@@ -65,6 +65,8 @@ class Tag:
     is_insensitive: bool
     is_inbox_tag: bool
     document_count: Final[int]
+    parent: int | None
+    children: Final[Sequence[int]]
     owner: int | None
     user_can_change: dataclasses.InitVar[bool | None] = None
     permissions: dataclasses.InitVar[Mapping[str, Any] | None] = None
