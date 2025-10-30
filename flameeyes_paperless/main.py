@@ -216,6 +216,13 @@ def identify_all(
     if exclude_identified and "identified" not in cfg.predefined_tags is None:
         LOGGER.warning("No identified tag present, will not exclude any document.")
 
+    checkpoint_file = Path("./paperless-automation-checkpoint")
+
+    try:
+        last_highest_id = int(checkpoint_file.read_text())
+    except Exception:
+        last_highest_id = -1
+
     with PaperlessSession(cfg) as s:
         if exclude_identified and "identified" not in cfg.predefined_tags:
             identified_tag_id = s.lookup_tag(cfg.predefined_tags["identified"]).id
@@ -232,26 +239,34 @@ def identify_all(
         if only_inbox:
             inbox_tag_id = s.lookup_tag(cfg.predefined_tags["inbox"]).id
 
-        with tempfile.TemporaryDirectory(prefix="paperless") as tmp_dir_s:
-            tmp_dir = Path(tmp_dir_s)
+        try:
+            with tempfile.TemporaryDirectory(prefix="paperless") as tmp_dir_s:
+                tmp_dir = Path(tmp_dir_s)
 
-            for doc in s.documents():
-                if not doc.mime_type == "application/pdf":
-                    continue
+                for doc in s.documents():
+                    if not doc.mime_type == "application/pdf":
+                        continue
 
-                tags = set(doc.tags)
-                if tags & excluded_tags:
-                    continue
+                    tags = set(doc.tags)
+                    if tags & excluded_tags:
+                        continue
 
-                if only_inbox and inbox_tag_id not in tags:
-                    continue
+                    if only_inbox and inbox_tag_id not in tags:
+                        continue
 
-                if identified_doc := identify_document(
-                    execute=execute, session=s, doc=doc, tmp_dir=Path(tmp_dir)
-                ):
-                    if execute:
-                        s.update_document(identified_doc)
-                        LOGGER.info(f"Document '{doc.title}' updated.")
+                    if doc.id <= last_highest_id:
+                        continue
+
+                    if identified_doc := identify_document(
+                        execute=execute, session=s, doc=doc, tmp_dir=Path(tmp_dir)
+                    ):
+                        if execute:
+                            s.update_document(identified_doc)
+                            LOGGER.info(f"Document '{doc.title}' updated.")
+
+                    last_highest_id = max(doc.id, last_highest_id)
+        finally:
+            checkpoint_file.write_text(f"{last_highest_id}")
 
 
 @main.command
