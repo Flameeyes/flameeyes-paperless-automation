@@ -8,7 +8,7 @@ from pathlib import Path
 from more_itertools import one
 from pdfminer.psparser import PSEOF
 from pdfrename.lib.pdf_document import Document as PDFDocument
-from pdfrename.lib.renamer import InvalidFilenameError, NameComponents, try_all_renamers
+from pdfrename.lib.renamer import NameComponents, try_all_renamers
 from pdfrename.lib.utils import normalize_account_holder_name
 
 from .default_objects import DefaultCustomField
@@ -57,15 +57,9 @@ def identify_document(
     result.service_name = session.config.lookup_correspondent(result.service_name)
     result.document_type = session.config.lookup_document_type(result.document_type)
 
-    try:
-        doc.title = str(result.render_filename(True, True)).removesuffix(".pdf")
-    except InvalidFilenameError as e:
-        LOGGER.warning(f"Filename found for '{doc.title}' ({doc.id}) is invalid: {e}")
-        return None
-
+    # yes it's redundant as is, hopefully we have a document number, too.
+    doc.title = result.document_type
     doc.created = result.date.strftime("%Y-%m-%d")
-
-    account_holder_name = " & ".join(result.account_holder)
 
     if execute:
         correspondent = ensure_correspondent(session, result.service_name)
@@ -88,18 +82,24 @@ def identify_document(
         if custom_field.field not in overwrite_fields
     ]
     doc.custom_field_values.append(
-        CustomFieldValue(field=field_account_holder.id, value=account_holder_name)
+        CustomFieldValue(
+            field=field_account_holder.id, value=result.normalized_account_holders
+        )
     )
+
     if result.account_number is not None:
         doc.custom_field_values.append(
             CustomFieldValue(field=field_account_number.id, value=result.account_number)
         )
+
     if result.document_number is not None:
         doc.custom_field_values.append(
             CustomFieldValue(
                 field=field_document_number.id, value=result.document_number
             )
         )
+        doc.title = f"{doc.title} - {result.normalized_document_number}"
+
     if identified_tag_name := session.config.predefined_tags.get("identified"):
         identified_tag = session.lookup_tag(identified_tag_name)
         doc.tags.append(identified_tag.id)
