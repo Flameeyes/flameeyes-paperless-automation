@@ -198,9 +198,10 @@ class PaperlessSession(contextlib.AbstractContextManager):
         object_type: ObjectType,
         full_permissions: bool = False,
         order_fields: str | None = None,
+        **kwargs: str,
     ) -> Iterator[object]:
         starting_path = f"/api/{object_type}/"
-        params = {}
+        params = {**kwargs}
         if full_permissions:
             params["full_perms"] = "true"
 
@@ -344,9 +345,29 @@ class PaperlessSession(contextlib.AbstractContextManager):
             "/api/custom_fields/", json={"name": name, "data_type": data_type}
         )
 
-    def documents(self, full_permissions: bool = False) -> Iterator[Document]:
+    def documents(
+        self,
+        full_permissions: bool = False,
+        required_tag: None | Tag = None,
+        excluded_tag: None | Tag = None,
+    ) -> Iterator[Document]:
+        """Search (list) documents based on the required tags.
+
+        Note that there is at most one possible tag required and excluded,
+        due to the limitation of Paperless-NGX APIs as of 2025-10-31.
+        The type for `tags__id_in` is int, rather than array<int>.
+        """
+        filter = {}
+        if required_tag is not None:
+            filter["tags__id__in"] = required_tag.id
+        if excluded_tag is not None:
+            filter["tags__id__none"] = excluded_tag.id
+
         return self._get_objects(
-            ObjectType.DOCUMENT, full_permissions=full_permissions, order_fields="id"
+            ObjectType.DOCUMENT,
+            full_permissions=full_permissions,
+            order_fields="id",
+            **filter,
         )
 
     def lookup_document(self, document_id: int) -> Document:

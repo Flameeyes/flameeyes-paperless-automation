@@ -294,14 +294,14 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
 
     with PaperlessSession(cfg) as s:
         if only_inbox:
-            inbox_tag_id = s.lookup_tag(cfg.predefined_tags["inbox"]).id
+            inbox_tag = s.lookup_tag(cfg.predefined_tags["inbox"])
         else:
-            inbox_tag_id = None
+            inbox_tag = None
 
         if "scanned" in cfg.predefined_tags:
-            scanned_tag_id = s.lookup_tag(cfg.predefined_tags["scanned"]).id
+            scanned_tag = s.lookup_tag(cfg.predefined_tags["scanned"])
         else:
-            scanned_tag_id = None
+            scanned_tag = None
 
         if "scanned" in cfg.predefined_storage_paths:
             scanned_storage_path = s.lookup_storage_path(
@@ -317,24 +317,15 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
         else:
             unsorted_storage_path = None
 
-        for doc in s.documents():
-            tags = set(doc.tags)
-
-            if only_inbox and inbox_tag_id not in tags:
-                continue
-
-            # No need to re-fetch the document if it's already tagged.
-            if scanned_tag_id in tags:
-                continue
-
+        for doc in s.documents(required_tag=inbox_tag, excluded_tag=scanned_tag):
             metadata = s.retrieve_document_metadata(doc.id)
             producer = metadata.original_producer
 
             if not (producer and any(sw in producer for sw in cfg.scan_software)):
                 continue
 
-            if scanned_tag_id is not None:
-                doc.tags.append(scanned_tag_id)
+            if scanned_tag is not None:
+                doc.tags.append(scanned_tag.id)
 
             if doc.storage_path is None or (
                 scanned_storage_path is not None
@@ -344,4 +335,4 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
 
             if execute:
                 s.update_document(doc)
-                LOGGER.info(f"Document '{doc.title}' updated.")
+                LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
