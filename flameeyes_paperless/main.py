@@ -220,31 +220,27 @@ def identify_all(
         last_highest_id = -1
 
     with PaperlessSession(cfg) as s:
-        if exclude_identified and "identified" not in cfg.predefined_tags:
-            identified_tag_id = s.lookup_tag(cfg.predefined_tags["identified"]).id
-        else:
-            identified_tag_id = None
-
-        if exclude_scanned and "scanned" in cfg.predefined_tags:
-            scanned_tag_id = s.lookup_tag(cfg.predefined_tags["scanned"]).id
-        else:
-            scanned_tag_id = None
-
-        excluded_tags = {identified_tag_id, scanned_tag_id}
+        required_tags = []
+        excluded_tags = []
 
         if only_inbox:
-            inbox_tag_id = s.lookup_tag(cfg.predefined_tags["inbox"]).id
+            inbox_tag = s.lookup_tag(cfg.predefined_tags["inbox"])
+            required_tags.append(inbox_tag)
+
+        if exclude_identified and "identified" not in cfg.predefined_tags:
+            identified_tag = s.lookup_tag(cfg.predefined_tags["identified"])
+            excluded_tags.append(identified_tag)
+
+        if exclude_scanned and "scanned" in cfg.predefined_tags:
+            scanned_tag = s.lookup_tag(cfg.predefined_tags["scanned"])
+            excluded_tags.append(scanned_tag)
 
         try:
-            for doc in s.documents():
+            for doc in s.documents(
+                required_tags=required_tags if required_tags else None,
+                excluded_tags=excluded_tags if excluded_tags else None,
+            ):
                 if not doc.mime_type == "application/pdf":
-                    continue
-
-                tags = set(doc.tags)
-                if tags & excluded_tags:
-                    continue
-
-                if only_inbox and inbox_tag_id not in tags:
                     continue
 
                 if doc.id <= last_highest_id:
@@ -310,7 +306,10 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
         else:
             unsorted_storage_path = None
 
-        for doc in s.documents(required_tag=inbox_tag, excluded_tag=scanned_tag):
+        for doc in s.documents(
+            required_tags=(inbox_tag,) if inbox_tag else None,
+            excluded_tags=(scanned_tag,) if scanned_tag else None,
+        ):
             metadata = s.retrieve_document_metadata(doc.id)
             producer = metadata.original_producer
 

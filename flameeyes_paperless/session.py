@@ -4,7 +4,7 @@
 
 import contextlib
 import dataclasses
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from enum import StrEnum
 from functools import cache, cached_property
 from typing import Any, Final, Self
@@ -348,20 +348,19 @@ class PaperlessSession(contextlib.AbstractContextManager):
     def documents(
         self,
         full_permissions: bool = False,
-        required_tag: None | Tag = None,
-        excluded_tag: None | Tag = None,
+        required_tags: None | Collection[Tag] = None,
+        excluded_tags: None | Collection[Tag] = None,
     ) -> Iterator[Document]:
-        """Search (list) documents based on the required tags.
-
-        Note that there is at most one possible tag required and excluded,
-        due to the limitation of Paperless-NGX APIs as of 2025-10-31.
-        The type for `tags__id_in` is int, rather than array<int>.
-        """
+        """Search (list) documents based on the required tags."""
         filter = {}
-        if required_tag is not None:
-            filter["tags__id__in"] = required_tag.id
-        if excluded_tag is not None:
-            filter["tags__id__none"] = excluded_tag.id
+        if required_tags is not None:
+            filter["tags__id__in"] = ",".join(
+                str(id) for id in sorted(tag.id for tag in required_tags)
+            )
+        if excluded_tags is not None:
+            filter["tags__id__none"] = ",".join(
+                str(id) for id in sorted(tag.id for tag in excluded_tags)
+            )
 
         return self._get_objects(
             ObjectType.DOCUMENT,
