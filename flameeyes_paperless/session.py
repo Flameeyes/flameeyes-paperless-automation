@@ -348,11 +348,14 @@ class PaperlessSession(contextlib.AbstractContextManager):
     def documents(
         self,
         full_permissions: bool = False,
+        mime_type: str | None = "application/pdf",
         required_tags: None | Collection[Tag] = None,
         excluded_tags: None | Collection[Tag] = None,
     ) -> Iterator[Document]:
         """Search (list) documents based on the required tags."""
         filter = {}
+        if mime_type is not None:
+            filter["mime_type"] = mime_type
         if required_tags is not None:
             filter["tags__id__in"] = ",".join(
                 str(id) for id in sorted(tag.id for tag in required_tags)

@@ -240,9 +240,6 @@ def identify_all(
                 required_tags=required_tags if required_tags else None,
                 excluded_tags=excluded_tags if excluded_tags else None,
             ):
-                if not doc.mime_type == "application/pdf":
-                    continue
-
                 if doc.id <= last_highest_id:
                     continue
 
@@ -251,7 +248,7 @@ def identify_all(
                 ):
                     if execute:
                         s.update_document(identified_doc)
-                        LOGGER.info(f"Document '{doc.title}' updated.")
+                        LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
 
                 last_highest_id = max(doc.id, last_highest_id)
         finally:
