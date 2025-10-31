@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import io
 from pathlib import Path
 
 from more_itertools import one
@@ -17,7 +18,7 @@ from .utils import LOGGER, ensure_correspondent, ensure_document_type
 
 
 def identify_document(
-    *, execute: bool, session: PaperlessSession, doc: Document, tmp_dir: Path
+    *, execute: bool, session: PaperlessSession, doc: Document
 ) -> Document | None:
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
 
@@ -32,11 +33,14 @@ def identify_document(
     )
 
     content = session.retrieve_document(doc.id, original=True)
-    tmp_pdf = tmp_dir / f"{doc.id}.pdf"
-    tmp_pdf.write_bytes(content)
+    pdf = io.BytesIO(content)
 
     try:
-        result: NameComponents = one(try_all_renamers(PDFDocument(tmp_pdf, LOGGER)))
+        result: NameComponents = one(
+            try_all_renamers(
+                PDFDocument(Path(f"{doc.id}.pdf"), pdf_file=pdf, logger=LOGGER)
+            )
+        )
         LOGGER.info("Document identified: %r", result)
     except ValueError:
         LOGGER.warning(f"Unable to find unique name for '{doc.title}' ({doc.id})")

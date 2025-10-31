@@ -4,7 +4,6 @@
 
 import dataclasses
 import re
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -172,13 +171,10 @@ def identify(ctx, *, documents: Sequence[str]) -> None:
             doc = s.lookup_document(document_id)
             LOGGER.info(f"Found document: {doc.title}")
 
-            with tempfile.TemporaryDirectory(prefix="paperless") as tmp_dir:
-                if identified_doc := identify_document(
-                    execute=execute, session=s, doc=doc, tmp_dir=Path(tmp_dir)
-                ):
-                    if execute:
-                        s.update_document(identified_doc)
-                        LOGGER.info(f"Document '{doc.title}' updated.")
+            if identified_doc := identify_document(execute=execute, session=s, doc=doc):
+                if execute:
+                    s.update_document(identified_doc)
+                    LOGGER.info(f"Document '{doc.title}' updated.")
 
 
 @main.command
@@ -240,31 +236,28 @@ def identify_all(
             inbox_tag_id = s.lookup_tag(cfg.predefined_tags["inbox"]).id
 
         try:
-            with tempfile.TemporaryDirectory(prefix="paperless") as tmp_dir_s:
-                tmp_dir = Path(tmp_dir_s)
+            for doc in s.documents():
+                if not doc.mime_type == "application/pdf":
+                    continue
 
-                for doc in s.documents():
-                    if not doc.mime_type == "application/pdf":
-                        continue
+                tags = set(doc.tags)
+                if tags & excluded_tags:
+                    continue
 
-                    tags = set(doc.tags)
-                    if tags & excluded_tags:
-                        continue
+                if only_inbox and inbox_tag_id not in tags:
+                    continue
 
-                    if only_inbox and inbox_tag_id not in tags:
-                        continue
+                if doc.id <= last_highest_id:
+                    continue
 
-                    if doc.id <= last_highest_id:
-                        continue
+                if identified_doc := identify_document(
+                    execute=execute, session=s, doc=doc
+                ):
+                    if execute:
+                        s.update_document(identified_doc)
+                        LOGGER.info(f"Document '{doc.title}' updated.")
 
-                    if identified_doc := identify_document(
-                        execute=execute, session=s, doc=doc, tmp_dir=Path(tmp_dir)
-                    ):
-                        if execute:
-                            s.update_document(identified_doc)
-                            LOGGER.info(f"Document '{doc.title}' updated.")
-
-                    last_highest_id = max(doc.id, last_highest_id)
+                last_highest_id = max(doc.id, last_highest_id)
         finally:
             checkpoint_file.write_text(f"{last_highest_id}")
 
