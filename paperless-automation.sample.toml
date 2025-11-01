@@ -6,7 +6,6 @@ url = "https://paperless.example.com/"
 username = "automation"
 password = "robot1"
 
-object_owner = "automation"
 all_access_group = "Family"
 
 identified_tag = "identified"

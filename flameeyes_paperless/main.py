@@ -50,7 +50,6 @@ def ensure_setup(ctx: click.Context):
 
     with PaperlessSession(cfg) as s:
         try:
-            object_owner = s.default_owner
             all_access_group = s.default_access_group
         except ObjectNotFound as e:
             raise click.ClickException(
@@ -66,15 +65,13 @@ def ensure_setup(ctx: click.Context):
             if all_access_group.id not in tag.actual_permissions.change.groups:
                 LOGGER.info(f"We should add {all_access_group.name} to '{tag.name}'")
                 changed = True
-            if tag.owner != object_owner.id:
-                LOGGER.info(
-                    f"We should change owner of the tag '{tag.name}' to {object_owner.username}"
-                )
+            if tag.owner is not None:
+                LOGGER.info(f"We should remove owner of the tag '{tag.name}'")
                 changed = True
 
             if execute and changed:
-                tag.owner = object_owner.id
-                tag.actual_permissions.change.groups.append(all_access_group.id)
+                tag.owner = None
+                tag.actual_permissions.change.groups.add(all_access_group.id)
                 s.update_tag(tag)
 
         for correspondent in s.correspondents(full_permissions=True):
@@ -88,17 +85,15 @@ def ensure_setup(ctx: click.Context):
                     f"We should add {all_access_group.name} to '{correspondent.name}'"
                 )
                 changed = True
-            if correspondent.owner != object_owner.id:
+            if correspondent.owner is not None:
                 LOGGER.info(
-                    f"We should change owner of the correspondent '{correspondent.name}' to '{object_owner.username}'"
+                    f"We should remove owner of the correspondent '{correspondent.name}'"
                 )
                 changed = True
 
             if execute and changed:
-                correspondent.owner = object_owner.id
-                correspondent.actual_permissions.change.groups.append(
-                    all_access_group.id
-                )
+                correspondent.owner = None
+                correspondent.actual_permissions.change.groups.add(all_access_group.id)
                 s.update_correspondent(correspondent)
 
         for document_type in s.document_types(full_permissions=True):
@@ -112,17 +107,15 @@ def ensure_setup(ctx: click.Context):
                     f"We should add {all_access_group.name} to '{document_type.name}'"
                 )
                 changed = True
-            if document_type.owner != object_owner.id:
+            if document_type.owner is not None:
                 LOGGER.info(
-                    f"We should change owner of the document type '{document_type.name}' to {object_owner.username}"
+                    f"We should remove owner of the document type '{document_type.name}'"
                 )
                 changed = True
 
             if execute and changed:
-                document_type.owner = object_owner.id
-                document_type.actual_permissions.change.groups.append(
-                    all_access_group.id
-                )
+                document_type.owner = None
+                document_type.actual_permissions.change.groups.add(all_access_group.id)
                 s.update_document_type(document_type)
 
         # Now we make sure that the configured objects actually exist.

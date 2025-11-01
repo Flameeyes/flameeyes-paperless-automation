@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 
 import contextlib
-import dataclasses
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from enum import StrEnum
 from functools import cache, cached_property
@@ -69,19 +68,6 @@ class PaperlessSession(contextlib.AbstractContextManager):
         return HTTPBasicAuth(self.config.username, self.config.password)
 
     @cached_property
-    def default_owner(self) -> User:
-        return one(
-            (
-                user
-                for user in self.users()
-                if user.username == self.config.object_owner
-            ),
-            too_short=ObjectNotFound(
-                f"No user found matching '{self.config.object_owner}'"
-            ),
-        )
-
-    @cached_property
     def default_access_group(self) -> Group:
         return one(
             (
@@ -99,8 +85,8 @@ class PaperlessSession(contextlib.AbstractContextManager):
         all_access_group = self.default_access_group
 
         return Permission(
-            view=UsersAndGroups(users=[], groups=[all_access_group.id]),
-            change=UsersAndGroups(users=[], groups=[all_access_group.id]),
+            view=UsersAndGroups(users=set(), groups={all_access_group.id}),
+            change=UsersAndGroups(users=set(), groups={all_access_group.id}),
         )
 
     @cached_property
@@ -232,7 +218,6 @@ class PaperlessSession(contextlib.AbstractContextManager):
 
     def update_tag(self, tag: Tag) -> Response:
         tag_json = tag.to_json()
-
         return self._patch(f"/api/tags/{tag.id}/", json=tag_json)
 
     def new_tag(
@@ -249,8 +234,8 @@ class PaperlessSession(contextlib.AbstractContextManager):
                 "slug": slug,
                 "matching_algorithm": matching_algorithm,
                 "is_inbox_tag": is_inbox_tag,
-                "owner": self.default_owner.id,
-                "set_permissions": dataclasses.asdict(self.default_permissions),
+                "owner": None,
+                "set_permissions": self.default_permissions.to_json(),
             },
         )
 
@@ -279,8 +264,8 @@ class PaperlessSession(contextlib.AbstractContextManager):
             json={
                 "name": name,
                 "slug": slug,
-                "owner": self.default_owner.id,
-                "set_permissions": dataclasses.asdict(self.default_permissions),
+                "owner": None,
+                "set_permissions": self.default_permissions.to_json(),
             },
         )
 
@@ -321,8 +306,8 @@ class PaperlessSession(contextlib.AbstractContextManager):
             json={
                 "name": name,
                 "slug": slug,
-                "owner": self.default_owner.id,
-                "set_permissions": dataclasses.asdict(self.default_permissions),
+                "owner": None,
+                "set_permissions": self.default_permissions.to_json(),
             },
         )
 

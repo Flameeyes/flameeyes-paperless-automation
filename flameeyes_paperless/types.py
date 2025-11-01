@@ -36,8 +36,8 @@ class Group:
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class UsersAndGroups:
-    users: list[int]
-    groups: list[int]
+    users: set[int]
+    groups: set[int]
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -48,9 +48,27 @@ class Permission:
     @classmethod
     def from_json(cls, json_dict: Mapping[str, Any]) -> Self:
         return cls(
-            view=UsersAndGroups(**json_dict["view"]),
-            change=UsersAndGroups(**json_dict["change"]),
+            view=UsersAndGroups(
+                users=set(json_dict["view"]["users"]),
+                groups=set(json_dict["view"]["groups"]),
+            ),
+            change=UsersAndGroups(
+                users=set(json_dict["change"]["users"]),
+                groups=set(json_dict["change"]["groups"]),
+            ),
         )
+
+    def to_json(self) -> Mapping[str, Any]:
+        return {
+            "view": {
+                "users": sorted(self.view.users),
+                "groups": sorted(self.view.groups),
+            },
+            "change": {
+                "users": sorted(self.change.users),
+                "groups": sorted(self.change.groups),
+            },
+        }
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -83,7 +101,7 @@ class Tag:
         tag_dict = dataclasses.asdict(self)
         permissions = tag_dict.pop("actual_permissions")
         if self.actual_permissions:
-            tag_dict["set_permissions"] = permissions
+            tag_dict["set_permissions"] = permissions.to_json()
 
         return tag_dict
 
@@ -113,7 +131,7 @@ class Correspondent:
         correspondent_dict = dataclasses.asdict(self)
         permissions = correspondent_dict.pop("actual_permissions")
         if self.actual_permissions:
-            correspondent_dict["set_permissions"] = permissions
+            correspondent_dict["set_permissions"] = permissions.to_json()
 
         return correspondent_dict
 
@@ -143,7 +161,7 @@ class DocumentType:
         document_type_dict = dataclasses.asdict(self)
         permissions = document_type_dict.pop("actual_permissions")
         if self.actual_permissions:
-            document_type_dict["set_permissions"] = permissions
+            document_type_dict["set_permissions"] = permissions.to_json()
 
         return document_type_dict
 
@@ -174,7 +192,7 @@ class StoragePath:
         obj_dict = dataclasses.asdict(self)
         permissions = obj_dict.pop("actual_permissions")
         if self.actual_permissions:
-            obj_dict["set_permissions"] = permissions
+            obj_dict["set_permissions"] = permissions.to_json()
 
         return obj_dict
 
@@ -263,7 +281,7 @@ class Document:
         document_dict = dataclasses.asdict(self)
         permissions = document_dict.pop("actual_permissions")
         if self.actual_permissions:
-            document_dict["set_permissions"] = permissions
+            document_dict["set_permissions"] = permissions.to_json()
 
         custom_fields = document_dict.pop("custom_field_values")
         document_dict["custom_fields"] = custom_fields
