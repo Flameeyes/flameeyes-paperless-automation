@@ -99,7 +99,7 @@ class PaperlessSession(contextlib.AbstractContextManager):
         # Find the API version.
         resp = self._http_session.get(f"{self.config.url}/api/")
         resp.raise_for_status()
-        self._api_version = min(4, int(resp.headers["X-Api-Version"]))
+        self._api_version = min(9, int(resp.headers["X-Api-Version"]))
 
         return self
 
