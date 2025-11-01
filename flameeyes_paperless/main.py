@@ -229,12 +229,14 @@ def identify_all(
             excluded_tags.append(scanned_tag)
 
         try:
-            for doc in s.documents(
+            for doc_id in s.search_documents(
                 required_tags=required_tags if required_tags else None,
                 excluded_tags=excluded_tags if excluded_tags else None,
             ):
-                if doc.id <= last_highest_id:
+                if doc_id <= last_highest_id:
                     continue
+
+                doc = s.lookup_document(doc_id)
 
                 if identified_doc := identify_document(
                     execute=execute, session=s, doc=doc

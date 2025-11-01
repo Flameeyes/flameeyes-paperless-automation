@@ -330,14 +330,12 @@ class PaperlessSession(contextlib.AbstractContextManager):
             "/api/custom_fields/", json={"name": name, "data_type": data_type}
         )
 
-    def documents(
+    def _document_query(
         self,
-        full_permissions: bool = False,
-        mime_type: str | None = "application/pdf",
-        required_tags: None | Collection[Tag] = None,
-        excluded_tags: None | Collection[Tag] = None,
-    ) -> Iterator[Document]:
-        """Search (list) documents based on the required tags."""
+        mime_type: str | None,
+        required_tags: None | Collection[Tag],
+        excluded_tags: None | Collection[Tag],
+    ) -> dict[str, str]:
         filter = {}
         if mime_type is not None:
             filter["mime_type"] = mime_type
@@ -350,12 +348,43 @@ class PaperlessSession(contextlib.AbstractContextManager):
                 str(id) for id in sorted(tag.id for tag in excluded_tags)
             )
 
+        return filter
+
+    def documents(
+        self,
+        full_permissions: bool = False,
+        mime_type: str | None = "application/pdf",
+        required_tags: None | Collection[Tag] = None,
+        excluded_tags: None | Collection[Tag] = None,
+    ) -> Iterator[object]:
+        """Retrieve documents based on the required tags."""
+        filter = self._document_query(mime_type, required_tags, excluded_tags)
+
         return self._get_objects(
             ObjectType.DOCUMENT,
             full_permissions=full_permissions,
             order_fields="id",
             **filter,
         )
+
+    def search_documents(
+        self,
+        mime_type: str | None = "application/pdf",
+        required_tags: None | Collection[Tag] = None,
+        excluded_tags: None | Collection[Tag] = None,
+    ) -> Iterator[int]:
+        starting_path = "/api/documents/"
+        params = {
+            "fields": "id",
+            # We set the page size to 1, because we don't care about the
+            # returned values, we care only of the "all" field returned.
+            "page_size": 1,
+            **self._document_query(mime_type, required_tags, excluded_tags),
+        }
+
+        resp = self._get(starting_path, params)
+
+        yield from sorted(resp.json()["all"])
 
     def lookup_document(self, document_id: int) -> Document:
         resp = self._get(f"/api/documents/{document_id}/", {})
