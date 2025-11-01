@@ -9,7 +9,10 @@ from more_itertools import one
 from pdfminer.psparser import PSEOF
 from pdfrename.lib.pdf_document import Document as PDFDocument
 from pdfrename.lib.renamer import NameComponents, try_all_renamers
-from pdfrename.lib.utils import normalize_account_holder_name
+from pdfrename.lib.utils import (
+    apply_pdfminer_log_filters,
+    normalize_account_holder_name,
+)
 
 from .default_objects import DefaultCustomField
 from .session import PaperlessSession
@@ -20,6 +23,8 @@ from .utils import LOGGER, ensure_correspondent, ensure_document_type
 def identify_document(
     *, execute: bool, session: PaperlessSession, doc: Document
 ) -> Document | None:
+    apply_pdfminer_log_filters()
+
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
 
     field_account_holder = session.cached_custom_field(
