@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import asyncio
 import io
 from pathlib import Path
 
@@ -27,14 +28,12 @@ async def identify_document(
 
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
 
-    field_account_holder = await session.cached_custom_field(
-        DefaultCustomField.ACCOUNT_HOLDER
-    )
-    field_account_number = await session.cached_custom_field(
-        DefaultCustomField.ACCOUNT_NUMBER
-    )
-    field_document_number = await session.cached_custom_field(
-        DefaultCustomField.DOCUMENT_NUMBER
+    field_account_holder, field_account_number, field_document_number = (
+        await asyncio.gather(
+            session.cached_custom_field(DefaultCustomField.ACCOUNT_HOLDER),
+            session.cached_custom_field(DefaultCustomField.ACCOUNT_NUMBER),
+            session.cached_custom_field(DefaultCustomField.DOCUMENT_NUMBER),
+        )
     )
 
     content = await session.retrieve_document(doc.id, original=True)
@@ -67,10 +66,12 @@ async def identify_document(
     doc.created = result.date.strftime("%Y-%m-%d")
 
     if execute:
-        correspondent = await ensure_correspondent(session, result.service_name)
-        doc.correspondent = correspondent.id
+        correspondent, document_type = await asyncio.gather(
+            ensure_correspondent(session, result.service_name),
+            ensure_document_type(session, result.document_type),
+        )
 
-        document_type = await ensure_document_type(session, result.document_type)
+        doc.correspondent = correspondent.id
         doc.document_type = document_type.id
 
     # We don't want to overwrite account or document numbers if they're already assigned
