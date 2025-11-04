@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: MIT
 
+import asyncio
 import dataclasses
 import re
 from collections.abc import Sequence
+from functools import wraps
 from pathlib import Path
 
 import click
@@ -22,6 +24,19 @@ from .utils import (
 )
 
 click_log.basic_config(LOGGER)
+
+
+def coro(func):
+    """Decorator to turn an async coroutine into a sync function by running it with asyncio.run.
+
+    The returned callable is synchronous so it can be used as a Click command handler.
+    """
+
+    @wraps(func)
+    def _sync(*args, **kwargs):
+        return asyncio.run(func(*args, **kwargs))
+
+    return _sync
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -44,13 +59,14 @@ def main(ctx: click.Context, *, execute: bool) -> None:
 
 @main.command()
 @click.pass_context
-def ensure_setup(ctx: click.Context):
+@coro
+async def ensure_setup(ctx: click.Context) -> None:
     execute = ctx.obj.execute
     cfg = Config.from_file()
 
-    with PaperlessSession(cfg) as s:
+    async with PaperlessSession(cfg) as s:
         try:
-            all_access_group = s.default_access_group
+            all_access_group = await s.default_access_group()
         except ObjectNotFound as e:
             raise click.ClickException(
                 f"Unable to find default object owner or access groups: {e}. Aborting."
@@ -58,8 +74,7 @@ def ensure_setup(ctx: click.Context):
 
         # Now we make sure that all the existing tags, correspondent, and document types
         # are owned by the default owner with the corresponding default access group.
-        all_tags = s.tags(full_permissions=True)
-        for tag in all_tags:
+        async for tag in s.tags(full_permissions=True):
             changed = False
             assert tag.actual_permissions is not None
             if all_access_group.id not in tag.actual_permissions.change.groups:
@@ -72,9 +87,9 @@ def ensure_setup(ctx: click.Context):
             if execute and changed:
                 tag.owner = None
                 tag.actual_permissions.change.groups.add(all_access_group.id)
-                s.update_tag(tag)
+                await s.update_tag(tag)
 
-        for correspondent in s.correspondents(full_permissions=True):
+        async for correspondent in s.correspondents(full_permissions=True):
             changed = False
             assert correspondent.actual_permissions is not None
             if (
@@ -94,9 +109,9 @@ def ensure_setup(ctx: click.Context):
             if execute and changed:
                 correspondent.owner = None
                 correspondent.actual_permissions.change.groups.add(all_access_group.id)
-                s.update_correspondent(correspondent)
+                await s.update_correspondent(correspondent)
 
-        for document_type in s.document_types(full_permissions=True):
+        async for document_type in s.document_types(full_permissions=True):
             changed = False
             assert document_type.actual_permissions is not None
             if (
@@ -116,22 +131,24 @@ def ensure_setup(ctx: click.Context):
             if execute and changed:
                 document_type.owner = None
                 document_type.actual_permissions.change.groups.add(all_access_group.id)
-                s.update_document_type(document_type)
+                await s.update_document_type(document_type)
 
         # Now we make sure that the configured objects actually exist.
         for tag in cfg.predefined_tags.values():
-            if not s.lookup_tag(tag):
+            try:
+                await s.lookup_tag(tag)
+            except ObjectNotFound:
                 if execute:
-                    s.new_tag(tag, to_slug(tag))
+                    await s.new_tag(tag, to_slug(tag))
                 else:
                     LOGGER.info(f"We should create the tag '{tag}'")
 
         # This creates the custom fields if we didn't have them already.
         try:
-            lookup_account_custom_fields(s)
+            await lookup_account_custom_fields(s)
         except ObjectNotFound:
             if execute:
-                ensure_account_custom_fields(s)
+                await ensure_account_custom_fields(s)
             else:
                 LOGGER.info("We should create the account custom field tags.")
 
@@ -144,14 +161,15 @@ def ensure_setup(ctx: click.Context):
     required=True,
     nargs=-1,
 )
-def identify(ctx, *, documents: Sequence[str]) -> None:
+@coro
+async def identify(ctx, *, documents: Sequence[str]) -> None:
     execute = ctx.obj.execute
     load_all_renamers()
     cfg = Config.from_file()
 
     doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
 
-    with PaperlessSession(cfg) as s:
+    async with PaperlessSession(cfg) as s:
         for doc_ref in documents:
             try:
                 document_id = int(doc_ref)
@@ -161,12 +179,14 @@ def identify(ctx, *, documents: Sequence[str]) -> None:
 
                 document_id = int(m.group("document_id"))
 
-            doc = s.lookup_document(document_id)
+            doc = await s.lookup_document(document_id)
             LOGGER.info(f"Found document: {doc.title}")
 
-            if identified_doc := identify_document(execute=execute, session=s, doc=doc):
+            if identified_doc := await identify_document(
+                execute=execute, session=s, doc=doc
+            ):
                 if execute:
-                    s.update_document(identified_doc)
+                    await s.update_document(identified_doc)
                     LOGGER.info(f"Document '{doc.title}' updated.")
 
 
@@ -190,7 +210,8 @@ def identify(ctx, *, documents: Sequence[str]) -> None:
     help="Whether to only process documents tagged with the configured inbox tag.",
 )
 @click.pass_context
-def identify_all(
+@coro
+async def identify_all(
     ctx, *, exclude_identified: bool, exclude_scanned: bool, only_inbox: bool
 ) -> None:
     execute = ctx.obj.execute
@@ -212,37 +233,37 @@ def identify_all(
     except Exception:
         last_highest_id = -1
 
-    with PaperlessSession(cfg) as s:
+    async with PaperlessSession(cfg) as s:
         required_tags = []
         excluded_tags = []
 
         if only_inbox:
-            inbox_tag = s.lookup_tag(cfg.predefined_tags["inbox"])
+            inbox_tag = await s.lookup_tag(cfg.predefined_tags["inbox"])
             required_tags.append(inbox_tag)
 
         if exclude_identified and "identified" not in cfg.predefined_tags:
-            identified_tag = s.lookup_tag(cfg.predefined_tags["identified"])
+            identified_tag = await s.lookup_tag(cfg.predefined_tags["identified"])
             excluded_tags.append(identified_tag)
 
         if exclude_scanned and "scanned" in cfg.predefined_tags:
-            scanned_tag = s.lookup_tag(cfg.predefined_tags["scanned"])
+            scanned_tag = await s.lookup_tag(cfg.predefined_tags["scanned"])
             excluded_tags.append(scanned_tag)
 
         try:
-            for doc_id in s.search_documents(
+            async for doc_id in s.search_documents(
                 required_tags=required_tags if required_tags else None,
                 excluded_tags=excluded_tags if excluded_tags else None,
             ):
                 if doc_id <= last_highest_id:
                     continue
 
-                doc = s.lookup_document(doc_id)
+                doc = await s.lookup_document(doc_id)
 
-                if identified_doc := identify_document(
+                if identified_doc := await identify_document(
                     execute=execute, session=s, doc=doc
                 ):
                     if execute:
-                        s.update_document(identified_doc)
+                        await s.update_document(identified_doc)
                         LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
 
                 last_highest_id = max(doc.id, last_highest_id)
@@ -258,7 +279,8 @@ def identify_all(
     help="Whether to only process documents tagged with the configured inbox tag.",
 )
 @click.pass_context
-def sort_scanned(ctx, *, only_inbox: bool) -> None:
+@coro
+async def sort_scanned(ctx, *, only_inbox: bool) -> None:
     execute = ctx.obj.execute
     load_all_renamers()
     cfg = Config.from_file()
@@ -273,36 +295,36 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
             "Unable to sort scanned documents if no scan software is defined."
         )
 
-    with PaperlessSession(cfg) as s:
+    async with PaperlessSession(cfg) as s:
         if only_inbox:
-            inbox_tag = s.lookup_tag(cfg.predefined_tags["inbox"])
+            inbox_tag = await s.lookup_tag(cfg.predefined_tags["inbox"])
         else:
             inbox_tag = None
 
         if "scanned" in cfg.predefined_tags:
-            scanned_tag = s.lookup_tag(cfg.predefined_tags["scanned"])
+            scanned_tag = await s.lookup_tag(cfg.predefined_tags["scanned"])
         else:
             scanned_tag = None
 
         if "scanned" in cfg.predefined_storage_paths:
-            scanned_storage_path = s.lookup_storage_path(
-                cfg.predefined_storage_paths["scanned"]
+            scanned_storage_path = (
+                await s.lookup_storage_path(cfg.predefined_storage_paths["scanned"])
             ).id
         else:
             scanned_storage_path = None
 
         if "unsorted" in cfg.predefined_storage_paths:
-            unsorted_storage_path = s.lookup_storage_path(
-                cfg.predefined_storage_paths["unsorted"]
+            unsorted_storage_path = (
+                await s.lookup_storage_path(cfg.predefined_storage_paths["unsorted"])
             ).id
         else:
             unsorted_storage_path = None
 
-        for doc in s.documents(
+        async for doc in s.documents(
             required_tags=(inbox_tag,) if inbox_tag else None,
             excluded_tags=(scanned_tag,) if scanned_tag else None,
         ):
-            metadata = s.retrieve_document_metadata(doc.id)
+            metadata = await s.retrieve_document_metadata(doc.id)
             producer = metadata.original_producer
 
             if not (producer and any(sw in producer for sw in cfg.scan_software)):
@@ -318,5 +340,5 @@ def sort_scanned(ctx, *, only_inbox: bool) -> None:
                 doc.storage_path = scanned_storage_path
 
             if execute:
-                s.update_document(doc)
+                await s.update_document(doc)
                 LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")

@@ -20,24 +20,24 @@ from .types import CustomFieldValue, Document
 from .utils import LOGGER, ensure_correspondent, ensure_document_type
 
 
-def identify_document(
+async def identify_document(
     *, execute: bool, session: PaperlessSession, doc: Document
 ) -> Document | None:
     apply_pdfminer_log_filters()
 
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
 
-    field_account_holder = session.cached_custom_field(
+    field_account_holder = await session.cached_custom_field(
         DefaultCustomField.ACCOUNT_HOLDER
     )
-    field_account_number = session.cached_custom_field(
+    field_account_number = await session.cached_custom_field(
         DefaultCustomField.ACCOUNT_NUMBER
     )
-    field_document_number = session.cached_custom_field(
+    field_document_number = await session.cached_custom_field(
         DefaultCustomField.DOCUMENT_NUMBER
     )
 
-    content = session.retrieve_document(doc.id, original=True)
+    content = await session.retrieve_document(doc.id, original=True)
     pdf = io.BytesIO(content)
 
     try:
@@ -67,10 +67,10 @@ def identify_document(
     doc.created = result.date.strftime("%Y-%m-%d")
 
     if execute:
-        correspondent = ensure_correspondent(session, result.service_name)
+        correspondent = await ensure_correspondent(session, result.service_name)
         doc.correspondent = correspondent.id
 
-        document_type = ensure_document_type(session, result.document_type)
+        document_type = await ensure_document_type(session, result.document_type)
         doc.document_type = document_type.id
 
     # We don't want to overwrite account or document numbers if they're already assigned
@@ -106,7 +106,7 @@ def identify_document(
         doc.title = f"{doc.title} - {result.normalized_document_number}"
 
     if identified_tag_name := session.config.predefined_tags.get("identified"):
-        identified_tag = session.lookup_tag(identified_tag_name)
+        identified_tag = await session.lookup_tag(identified_tag_name)
         doc.tags.append(identified_tag.id)
 
     return doc

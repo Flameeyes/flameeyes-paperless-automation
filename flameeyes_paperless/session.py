@@ -3,15 +3,14 @@
 # SPDX-License-Identifier: MIT
 
 import contextlib
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Collection, Iterator, Mapping
 from enum import StrEnum
-from functools import cache, cached_property
+from functools import cached_property
 from typing import Any, Final, Self
 from urllib.parse import urljoin, urlparse, urlunparse
 
-from more_itertools import one
-from requests import Response, Session
-from requests.auth import HTTPBasicAuth
+import aiohttp
+from aiohttp import BasicAuth, ClientSession
 
 from .config import Config
 from .default_objects import DefaultCustomField
@@ -57,32 +56,29 @@ _TYPE_TO_STRUCTURE: Mapping[ObjectType, type] = {
 }
 
 
-class PaperlessSession(contextlib.AbstractContextManager):
+class PaperlessSession(contextlib.AbstractAsyncContextManager):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config: Final[Config] = config
-        self._http_session: None | Session = None
+        self._http_session: None | ClientSession = None
+        # manual cache for async cached custom fields
+        self._cached_custom_fields: dict[DefaultCustomField, object] = {}
 
     @cached_property
-    def http_auth(self) -> HTTPBasicAuth:
-        return HTTPBasicAuth(self.config.username, self.config.password)
+    def http_auth(self) -> BasicAuth:
+        return BasicAuth(self.config.username, self.config.password)
 
-    @cached_property
-    def default_access_group(self) -> Group:
-        return one(
-            (
-                group
-                for group in self.groups()
-                if group.name == self.config.all_access_group
-            ),
-            too_short=ObjectNotFound(
-                f"No group found matching '{self.config.all_access_group}'"
-            ),
+    async def default_access_group(self) -> Group:
+        async for group in self.groups():
+            if group.name == self.config.all_access_group:
+                return group
+
+        raise ObjectNotFound(
+            f"No group found matching '{self.config.all_access_group}'"
         )
 
-    @cached_property
-    def default_permissions(self) -> Permission:
-        all_access_group = self.default_access_group
+    async def default_permissions(self) -> Permission:
+        all_access_group = await self.default_access_group()
 
         return Permission(
             view=UsersAndGroups(users=set(), groups={all_access_group.id}),
@@ -93,19 +89,18 @@ class PaperlessSession(contextlib.AbstractContextManager):
     def _api_version_headers(self) -> Mapping[str, str]:
         return {"accept": f"application/json; version={self._api_version}"}
 
-    def __enter__(self) -> Self:
-        self._http_session = Session()
-        self._http_session.auth = self.http_auth
+    async def __aenter__(self) -> Self:
+        self._http_session = aiohttp.ClientSession(auth=self.http_auth)
         # Find the API version.
-        resp = self._http_session.get(f"{self.config.url}/api/")
+        resp = await self._http_session.get(f"{self.config.url}/api/")
         resp.raise_for_status()
-        self._api_version = min(9, int(resp.headers["X-Api-Version"]))
+        self._api_version = min(9, int(resp.headers.get("X-Api-Version", "1")))
 
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
         if s := self._http_session:
-            s.close()
+            await s.close()
 
     @cached_property
     def _api_path(self) -> str:
@@ -118,45 +113,43 @@ class PaperlessSession(contextlib.AbstractContextManager):
 
         return path
 
-    def _get(self, path: str, params: Mapping[str, str]) -> Response:
+    async def _get(self, path: str, params: Mapping[str, str]) -> dict[str, object]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
-        resp = s.get(
+        resp = await s.get(
             self._normalize_path(path), headers=self._api_version_headers, params=params
         )
         resp.raise_for_status()
-        return resp
+        return await resp.json()
 
-    def _get_pdf(self, path: str, original: bool = True) -> Response:
+    async def _get_pdf(self, path: str, original: bool = True) -> bytes:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
-        resp = s.get(
+        resp = await s.get(
             self._normalize_path(path),
             params={"original": "true" if original else False},
         )
         resp.raise_for_status()
-        return resp
+        return await resp.read()
 
-    def _patch(self, path: str, json: Mapping[str, Any]) -> Response:
+    async def _patch(self, path: str, json: Mapping[str, Any]) -> dict[str, object]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
-        resp = s.patch(self._normalize_path(path), json=json)
+        resp = await s.patch(self._normalize_path(path), json=json)
         resp.raise_for_status()
-        return resp
+        return await resp.json()
 
-    def _post(self, path: str, json: Mapping[str, Any]) -> Response:
+    async def _post(self, path: str, json: Mapping[str, Any]) -> dict[str, object]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
-        resp = s.post(self._normalize_path(path), json=json)
+        resp = await s.post(self._normalize_path(path), json=json)
         resp.raise_for_status()
-        return resp
+        return await resp.json()
 
     def _extract_objects(
-        self, object_type: ObjectType, resp: Response
+        self, object_type: ObjectType, resp_json: dict[str, object]
     ) -> Iterator[object]:
-        return (
-            _TYPE_TO_STRUCTURE[object_type](**obj) for obj in resp.json()["results"]
-        )
+        return (_TYPE_TO_STRUCTURE[object_type](**obj) for obj in resp_json["results"])
 
     @staticmethod
     def _fix_next_url(next_url: str | None) -> str | None:
@@ -179,13 +172,13 @@ class PaperlessSession(contextlib.AbstractContextManager):
             )
         )
 
-    def _get_objects(
+    async def _get_objects(
         self,
         object_type: ObjectType,
         full_permissions: bool = False,
         order_fields: str | None = None,
         **kwargs: str,
-    ) -> Iterator[object]:
+    ) -> AsyncIterator[object]:
         starting_path = f"/api/{object_type}/"
         params = {**kwargs}
         if full_permissions:
@@ -194,40 +187,49 @@ class PaperlessSession(contextlib.AbstractContextManager):
         if order_fields:
             params["ordering"] = order_fields
 
-        resp = self._get(starting_path, params)
-        yield from self._extract_objects(object_type, resp)
-        while next_url := self._fix_next_url(resp.json()["next"]):
-            resp = self._get(next_url, {})
-            yield from self._extract_objects(object_type, resp)
+        resp_json = await self._get(starting_path, params)
+        for obj in self._extract_objects(object_type, resp_json):
+            yield obj
 
-    def users(self) -> Iterator[User]:
-        return self._get_objects(ObjectType.USER)
+        while next_url := self._fix_next_url(resp_json.get("next")):
+            resp_json = await self._get(next_url, {})
+            for obj in self._extract_objects(object_type, resp_json):
+                yield obj
 
-    def groups(self) -> Iterator[Group]:
-        return self._get_objects(ObjectType.GROUP)
+    async def users(self) -> AsyncIterator[User]:
+        async for u in self._get_objects(ObjectType.USER):
+            yield u
 
-    def tags(self, full_permissions: bool = False) -> Iterator[Tag]:
-        return self._get_objects(ObjectType.TAG, full_permissions=full_permissions)
+    async def groups(self) -> AsyncIterator[Group]:
+        async for g in self._get_objects(ObjectType.GROUP):
+            yield g
 
-    def lookup_tag(self, name: str) -> Tag:
+    async def tags(self, full_permissions: bool = False) -> AsyncIterator[Tag]:
+        async for t in self._get_objects(
+            ObjectType.TAG, full_permissions=full_permissions
+        ):
+            yield t
+
+    async def lookup_tag(self, name: str) -> Tag:
         name_lower = name.lower()
-        return one(
-            (obj for obj in self.tags() if name_lower == obj.name.lower()),
-            too_short=ObjectNotFound(f"No tag found matching '{name}'"),
-        )
+        async for obj in self.tags():
+            if name_lower == obj.name.lower():
+                return obj
 
-    def update_tag(self, tag: Tag) -> Response:
+        raise ObjectNotFound(f"No tag found matching '{name}'")
+
+    async def update_tag(self, tag: Tag) -> dict[str, object]:
         tag_json = tag.to_json()
-        return self._patch(f"/api/tags/{tag.id}/", json=tag_json)
+        return await self._patch(f"/api/tags/{tag.id}/", json=tag_json)
 
-    def new_tag(
+    async def new_tag(
         self,
         name: str,
         slug: str,
         matching_algorithm: int = 0,
         is_inbox_tag: bool = False,
-    ) -> Response:
-        return self._post(
+    ) -> dict[str, object]:
+        return await self._post(
             "/api/tags/",
             json={
                 "name": name,
@@ -235,98 +237,120 @@ class PaperlessSession(contextlib.AbstractContextManager):
                 "matching_algorithm": matching_algorithm,
                 "is_inbox_tag": is_inbox_tag,
                 "owner": None,
-                "set_permissions": self.default_permissions.to_json(),
+                "set_permissions": (await self.default_permissions()).to_json(),
             },
         )
 
-    def correspondents(self, full_permissions: bool = False) -> Iterator[Correspondent]:
-        return self._get_objects(
+    async def correspondents(
+        self, full_permissions: bool = False
+    ) -> AsyncIterator[Correspondent]:
+        async for c in self._get_objects(
             ObjectType.CORRESPONDENT, full_permissions=full_permissions
-        )
+        ):
+            yield c
 
-    def lookup_correspondent(self, name: str) -> Correspondent:
+    async def lookup_correspondent(self, name: str) -> Correspondent:
         name_lower = name.lower()
-        return one(
-            (obj for obj in self.correspondents() if name_lower == obj.name.lower()),
-            too_short=ObjectNotFound(f"No correspondent found matching '{name}'"),
-        )
+        async for obj in self.correspondents():
+            if name_lower == obj.name.lower():
+                return obj
 
-    def update_correspondent(self, correspondent: Correspondent) -> Response:
+        raise ObjectNotFound(f"No correspondent found matching '{name}'")
+
+    async def update_correspondent(
+        self, correspondent: Correspondent
+    ) -> dict[str, object]:
         correspondent_json = correspondent.to_json()
 
-        return self._patch(
+        return await self._patch(
             f"/api/correspondents/{correspondent.id}/", json=correspondent_json
         )
 
-    def new_correspondent(self, name: str, slug: str) -> Response:
-        return self._post(
+    async def new_correspondent(self, name: str, slug: str) -> dict[str, object]:
+        return await self._post(
             "/api/correspondents/",
             json={
                 "name": name,
                 "slug": slug,
                 "owner": None,
-                "set_permissions": self.default_permissions.to_json(),
+                "set_permissions": (await self.default_permissions()).to_json(),
             },
         )
 
-    def document_types(self, full_permissions: bool = False) -> Iterator[DocumentType]:
-        return self._get_objects(
+    async def document_types(
+        self, full_permissions: bool = False
+    ) -> AsyncIterator[DocumentType]:
+        async for dt in self._get_objects(
             ObjectType.DOCUMENT_TYPE, full_permissions=full_permissions
-        )
+        ):
+            yield dt
 
-    def lookup_document_type(self, name: str) -> DocumentType:
+    async def lookup_document_type(self, name: str) -> DocumentType:
         name_lower = name.lower()
-        return one(
-            (obj for obj in self.document_types() if name_lower == obj.name.lower()),
-            too_short=ObjectNotFound(f"No document type found matching '{name}'"),
-        )
+        async for obj in self.document_types():
+            if name_lower == obj.name.lower():
+                return obj
 
-    def storage_paths(self, full_permissions: bool = False) -> Iterator[StoragePath]:
-        return self._get_objects(
+        raise ObjectNotFound(f"No document type found matching '{name}'")
+
+    async def storage_paths(
+        self, full_permissions: bool = False
+    ) -> AsyncIterator[StoragePath]:
+        async for sp in self._get_objects(
             ObjectType.STORAGE_PATH, full_permissions=full_permissions
-        )
+        ):
+            yield sp
 
-    def lookup_storage_path(self, name: str) -> DocumentType:
+    async def lookup_storage_path(self, name: str) -> StoragePath:
         name_lower = name.lower()
-        return one(
-            (obj for obj in self.storage_paths() if name_lower == obj.name.lower()),
-            too_short=ObjectNotFound(f"No storage path found matching '{name}'"),
-        )
+        async for obj in self.storage_paths():
+            if name_lower == obj.name.lower():
+                return obj
 
-    def update_document_type(self, document_type: DocumentType) -> Response:
+        raise ObjectNotFound(f"No storage path found matching '{name}'")
+
+    async def update_document_type(
+        self, document_type: DocumentType
+    ) -> dict[str, object]:
         document_type_json = document_type.to_json()
 
-        return self._patch(
+        return await self._patch(
             f"/api/document_types/{document_type.id}/", json=document_type_json
         )
 
-    def new_document_type(self, name: str, slug: str) -> Response:
-        return self._post(
+    async def new_document_type(self, name: str, slug: str) -> dict[str, object]:
+        return await self._post(
             "/api/document_types/",
             json={
                 "name": name,
                 "slug": slug,
                 "owner": None,
-                "set_permissions": self.default_permissions.to_json(),
+                "set_permissions": (await self.default_permissions()).to_json(),
             },
         )
 
-    def custom_fields(self) -> Sequence[CustomField]:
-        return self._get_objects(ObjectType.CUSTOM_FIELD)
+    async def custom_fields(self) -> AsyncIterator[CustomField]:
+        async for cf in self._get_objects(ObjectType.CUSTOM_FIELD):
+            yield cf
 
-    def lookup_custom_field(self, name: str) -> CustomField:
+    async def lookup_custom_field(self, name: str) -> CustomField:
         name_lower = name.lower()
-        return one(
-            (obj for obj in self.custom_fields() if name_lower == obj.name.lower()),
-            too_short=ObjectNotFound(f"No custom field found matching '{name}'"),
-        )
+        async for obj in self.custom_fields():
+            if name_lower == obj.name.lower():
+                return obj
 
-    @cache
-    def cached_custom_field(self, field: DefaultCustomField) -> CustomField:
-        return self.lookup_custom_field(field)
+        raise ObjectNotFound(f"No custom field found matching '{name}'")
 
-    def new_custom_field(self, name: str, data_type: str) -> Response:
-        return self._post(
+    async def cached_custom_field(self, field: DefaultCustomField) -> CustomField:
+        if field in self._cached_custom_fields:
+            return self._cached_custom_fields[field]
+
+        cf = await self.lookup_custom_field(field)
+        self._cached_custom_fields[field] = cf
+        return cf
+
+    async def new_custom_field(self, name: str, data_type: str) -> dict[str, object]:
+        return await self._post(
             "/api/custom_fields/", json={"name": name, "data_type": data_type}
         )
 
@@ -350,29 +374,30 @@ class PaperlessSession(contextlib.AbstractContextManager):
 
         return filter
 
-    def documents(
+    async def documents(
         self,
         full_permissions: bool = False,
         mime_type: str | None = "application/pdf",
         required_tags: None | Collection[Tag] = None,
         excluded_tags: None | Collection[Tag] = None,
-    ) -> Iterator[object]:
+    ) -> AsyncGenerator[object, None]:
         """Retrieve documents based on the required tags."""
         filter = self._document_query(mime_type, required_tags, excluded_tags)
 
-        return self._get_objects(
+        async for obj in self._get_objects(
             ObjectType.DOCUMENT,
             full_permissions=full_permissions,
             order_fields="id",
             **filter,
-        )
+        ):
+            yield obj
 
-    def search_documents(
+    async def search_documents(
         self,
         mime_type: str | None = "application/pdf",
         required_tags: None | Collection[Tag] = None,
         excluded_tags: None | Collection[Tag] = None,
-    ) -> Iterator[int]:
+    ) -> AsyncIterator[int]:
         starting_path = "/api/documents/"
         params = {
             "fields": "id",
@@ -382,24 +407,27 @@ class PaperlessSession(contextlib.AbstractContextManager):
             **self._document_query(mime_type, required_tags, excluded_tags),
         }
 
-        resp = self._get(starting_path, params)
+        resp_json = await self._get(starting_path, params)
 
-        yield from sorted(resp.json()["all"])
+        for v in sorted(resp_json["all"]):
+            yield v
 
-    def lookup_document(self, document_id: int) -> Document:
-        resp = self._get(f"/api/documents/{document_id}/", {})
-        return Document(**resp.json())
+    async def lookup_document(self, document_id: int) -> Document:
+        resp_json = await self._get(f"/api/documents/{document_id}/", {})
+        return Document(**resp_json)
 
-    def retrieve_document(self, document_id: int, original: bool = False) -> bytes:
-        return self._get_pdf(
+    async def retrieve_document(
+        self, document_id: int, original: bool = False
+    ) -> bytes:
+        return await self._get_pdf(
             f"/api/documents/{document_id}/download/", original=original
-        ).content
+        )
 
-    def retrieve_document_metadata(self, document_id: int) -> DocumentMetadata:
-        resp = self._get(f"/api/documents/{document_id}/metadata/", {})
-        return DocumentMetadata(**resp.json())
+    async def retrieve_document_metadata(self, document_id: int) -> DocumentMetadata:
+        resp_json = await self._get(f"/api/documents/{document_id}/metadata/", {})
+        return DocumentMetadata(**resp_json)
 
-    def update_document(self, document: Document) -> Response:
+    async def update_document(self, document: Document) -> dict[str, object]:
         document_json = document.to_json()
 
-        return self._patch(f"/api/documents/{document.id}/", json=document_json)
+        return await self._patch(f"/api/documents/{document.id}/", json=document_json)

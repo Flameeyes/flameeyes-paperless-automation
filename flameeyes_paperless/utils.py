@@ -20,10 +20,12 @@ def to_slug(name: str) -> str:
     return re.sub(r"\W", "-", slug)
 
 
-def lookup_account_custom_fields(
+async def lookup_account_custom_fields(
     s: PaperlessSession,
 ) -> tuple[CustomField, CustomField, CustomField]:
-    all_custom_fields = tuple(s.custom_fields())
+    all_custom_fields = []
+    async for cf in s.custom_fields():
+        all_custom_fields.append(cf)
 
     account_name_field = only(
         custom_field
@@ -58,10 +60,12 @@ def lookup_account_custom_fields(
     return account_name_field, account_number_field, document_number_field
 
 
-def ensure_account_custom_fields(
+async def ensure_account_custom_fields(
     s: PaperlessSession,
 ) -> tuple[CustomField, CustomField, CustomField]:
-    all_custom_fields = tuple(s.custom_fields())
+    all_custom_fields = []
+    async for cf in s.custom_fields():
+        all_custom_fields.append(cf)
 
     account_name_field = only(
         custom_field
@@ -82,32 +86,42 @@ def ensure_account_custom_fields(
     )
 
     if account_name_field is None:
-        s.new_custom_field(name=DefaultCustomField.ACCOUNT_HOLDER, data_type="string")
+        await s.new_custom_field(
+            name=DefaultCustomField.ACCOUNT_HOLDER, data_type="string"
+        )
     if account_number_field is None:
-        s.new_custom_field(name=DefaultCustomField.ACCOUNT_NUMBER, data_type="string")
+        await s.new_custom_field(
+            name=DefaultCustomField.ACCOUNT_NUMBER, data_type="string"
+        )
     if document_number_field is None:
-        s.new_custom_field(name=DefaultCustomField.DOCUMENT_NUMBER, data_type="string")
+        await s.new_custom_field(
+            name=DefaultCustomField.DOCUMENT_NUMBER, data_type="string"
+        )
 
-    return lookup_account_custom_fields(s)
+    return await lookup_account_custom_fields(s)
 
 
-def ensure_document_type(
+async def ensure_document_type(
     s: PaperlessSession,
     document_type_name: str,
 ) -> DocumentType:
     try:
-        return s.lookup_document_type(document_type_name)
+        return await s.lookup_document_type(document_type_name)
     except ObjectNotFound:
-        s.new_document_type(name=document_type_name, slug=to_slug(document_type_name))
-        return ensure_document_type(s, document_type_name)
+        await s.new_document_type(
+            name=document_type_name, slug=to_slug(document_type_name)
+        )
+        return await ensure_document_type(s, document_type_name)
 
 
-def ensure_correspondent(
+async def ensure_correspondent(
     s: PaperlessSession,
     correspondent_name: str,
 ) -> Correspondent:
     try:
-        return s.lookup_correspondent(correspondent_name)
+        return await s.lookup_correspondent(correspondent_name)
     except ObjectNotFound:
-        s.new_correspondent(name=correspondent_name, slug=to_slug(correspondent_name))
-        return ensure_correspondent(s, correspondent_name)
+        await s.new_correspondent(
+            name=correspondent_name, slug=to_slug(correspondent_name)
+        )
+        return await ensure_correspondent(s, correspondent_name)
