@@ -99,9 +99,9 @@ class Tag:
 
     def to_json(self) -> Mapping[str, Any]:
         tag_dict = dataclasses.asdict(self)
-        permissions = tag_dict.pop("actual_permissions")
+        tag_dict.pop("actual_permissions")
         if self.actual_permissions:
-            tag_dict["set_permissions"] = permissions.to_json()
+            tag_dict["set_permissions"] = self.actual_permissions.to_json()
 
         return tag_dict
 
@@ -129,9 +129,9 @@ class Correspondent:
 
     def to_json(self) -> Mapping[str, Any]:
         correspondent_dict = dataclasses.asdict(self)
-        permissions = correspondent_dict.pop("actual_permissions")
+        correspondent_dict.pop("actual_permissions")
         if self.actual_permissions:
-            correspondent_dict["set_permissions"] = permissions.to_json()
+            correspondent_dict["set_permissions"] = self.actual_permissions.to_json()
 
         return correspondent_dict
 
@@ -159,9 +159,9 @@ class DocumentType:
 
     def to_json(self) -> Mapping[str, Any]:
         document_type_dict = dataclasses.asdict(self)
-        permissions = document_type_dict.pop("actual_permissions")
+        document_type_dict.pop("actual_permissions")
         if self.actual_permissions:
-            document_type_dict["set_permissions"] = permissions.to_json()
+            document_type_dict["set_permissions"] = self.actual_permissions.to_json()
 
         return document_type_dict
 
@@ -190,9 +190,9 @@ class StoragePath:
 
     def to_json(self) -> Mapping[str, Any]:
         obj_dict = dataclasses.asdict(self)
-        permissions = obj_dict.pop("actual_permissions")
+        obj_dict.pop("actual_permissions")
         if self.actual_permissions:
-            obj_dict["set_permissions"] = permissions.to_json()
+            obj_dict["set_permissions"] = self.actual_permissions.to_json()
 
         return obj_dict
 
@@ -279,9 +279,9 @@ class Document:
 
     def to_json(self) -> Mapping[str, Any]:
         document_dict = dataclasses.asdict(self)
-        permissions = document_dict.pop("actual_permissions")
+        document_dict.pop("actual_permissions")
         if self.actual_permissions:
-            document_dict["set_permissions"] = permissions.to_json()
+            document_dict["set_permissions"] = self.actual_permissions.to_json()
 
         custom_fields = document_dict.pop("custom_field_values")
         document_dict["custom_fields"] = custom_fields
