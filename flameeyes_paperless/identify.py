@@ -23,7 +23,7 @@ from .utils import LOGGER, ensure_correspondent, ensure_document_type
 
 async def identify_document(
     *, execute: bool, session: PaperlessSession, doc: Document
-) -> Document | None:
+) -> None:
     apply_pdfminer_log_filters()
 
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
@@ -110,4 +110,6 @@ async def identify_document(
         identified_tag = await session.lookup_tag(identified_tag_name)
         doc.tags.append(identified_tag.id)
 
-    return doc
+    if execute:
+        await session.update_document(doc)
+        LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")

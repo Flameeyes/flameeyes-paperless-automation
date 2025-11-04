@@ -182,12 +182,7 @@ async def identify(ctx, *, documents: Sequence[str]) -> None:
             doc = await s.lookup_document(document_id)
             LOGGER.info(f"Found document: {doc.title}")
 
-            if identified_doc := await identify_document(
-                execute=execute, session=s, doc=doc
-            ):
-                if execute:
-                    await s.update_document(identified_doc)
-                    LOGGER.info(f"Document '{doc.title}' updated.")
+            await identify_document(execute=execute, session=s, doc=doc)
 
 
 @main.command
@@ -258,13 +253,7 @@ async def identify_all(
                     continue
 
                 doc = await s.lookup_document(doc_id)
-
-                if identified_doc := await identify_document(
-                    execute=execute, session=s, doc=doc
-                ):
-                    if execute:
-                        await s.update_document(identified_doc)
-                        LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
+                await identify_document(execute=execute, session=s, doc=doc)
 
                 last_highest_id = max(doc.id, last_highest_id)
         finally:
