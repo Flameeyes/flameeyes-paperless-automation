@@ -2,6 +2,60 @@
 #
 # SPDX-License-Identifier: 0BSD
 
+[project]
+name = "flameeyes-paperless-automation"
+version = "0.1.0"
+description = "Personal Paperless Automation by Flameeyes"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSES/*"]
+requires-python = ">=3.12"
+authors = [
+  { name = "Diego Elio Pettenò", email = "flameeyes@flameeyes.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+]
+keywords = ["paperless"]
+dependencies = [
+  "aiohttp",
+  "click",
+  "click-log",
+  "more_itertools",
+  "pdfrenamer @ git+https://github.com/Flameeyes/pdfrename",
+]
+
+[project.scripts]
+flameeyes-paperless = "flameeyes_paperless.main:main"
+flameeyes-paperless-web = "flameeyes_paperless.webapp:main"
+
+[project.urls]
+Homepage = "https://github.com/Flameeyes/flameeyes-paperless-automation"
+
+[dependency-groups]
+dev = [
+  "pytest-mypy",
+  "mypy",
+  "types-click-log",
+  "types-setuptools",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "flameeyes_paperless",
+]
+
 [tool.black]
 line-length = 88
 target-version = ['py313']
@@ -11,3 +65,6 @@ target-version = ['py313']
 line_length = 88
 multi_line_output = 3
 include_trailing_comma = true
+
+[tool.mypy]
+python_version = "3.13"

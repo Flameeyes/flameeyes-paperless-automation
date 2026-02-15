@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2024 Diego Elio Pettenò
+#
+# SPDX-License-Identifier: 0BSD
+
+[flake8]
+max-line-length = 88
+# E501: ignore long line errors, black takes care of them.
+# E203: "whitespace before ':'" — conflicts with black
+extend-ignore = E501, E203
