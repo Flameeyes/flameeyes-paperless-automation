@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import contextlib
-from collections.abc import AsyncGenerator, AsyncIterator, Collection, Iterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Collection, Mapping
 from enum import StrEnum
 from functools import cached_property
 from typing import Any, Final, Self
@@ -62,7 +62,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         self.config: Final[Config] = config
         self._http_session: None | ClientSession = None
         # manual cache for async cached custom fields
-        self._cached_custom_fields: dict[DefaultCustomField, object] = {}
+        self._cached_custom_fields: dict[DefaultCustomField, CustomField] = {}
 
     @cached_property
     def http_auth(self) -> BasicAuth:
@@ -113,7 +113,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
         return path
 
-    async def _get(self, path: str, params: Mapping[str, str]) -> dict[str, object]:
+    async def _get(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
         resp = await s.get(
@@ -127,19 +127,19 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
             raise RuntimeError("Session not opened!")
         resp = await s.get(
             self._normalize_path(path),
-            params={"original": "true" if original else False},
+            params={"original": "true" if original else "false"},
         )
         resp.raise_for_status()
         return await resp.read()
 
-    async def _patch(self, path: str, json: Mapping[str, Any]) -> dict[str, object]:
+    async def _patch(self, path: str, json: Mapping[str, Any]) -> dict[str, Any]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
         resp = await s.patch(self._normalize_path(path), json=json)
         resp.raise_for_status()
         return await resp.json()
 
-    async def _post(self, path: str, json: Mapping[str, Any]) -> dict[str, object]:
+    async def _post(self, path: str, json: Mapping[str, Any]) -> dict[str, Any]:
         if not (s := self._http_session):
             raise RuntimeError("Session not opened!")
         resp = await s.post(self._normalize_path(path), json=json)
@@ -147,8 +147,8 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         return await resp.json()
 
     def _extract_objects(
-        self, object_type: ObjectType, resp_json: dict[str, object]
-    ) -> Iterator[object]:
+        self, object_type: ObjectType, resp_json: dict[str, Any]
+    ) -> Iterator[Any]:
         return (_TYPE_TO_STRUCTURE[object_type](**obj) for obj in resp_json["results"])
 
     @staticmethod
@@ -178,7 +178,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         full_permissions: bool = False,
         order_fields: str | None = None,
         **kwargs: str,
-    ) -> AsyncIterator[object]:
+    ) -> AsyncIterator[Any]:
         starting_path = f"/api/{object_type}/"
         params = {**kwargs}
         if full_permissions:
@@ -218,7 +218,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
         raise ObjectNotFound(f"No tag found matching '{name}'")
 
-    async def update_tag(self, tag: Tag) -> dict[str, object]:
+    async def update_tag(self, tag: Tag) -> dict[str, Any]:
         tag_json = tag.to_json()
         return await self._patch(f"/api/tags/{tag.id}/", json=tag_json)
 
@@ -228,7 +228,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         slug: str,
         matching_algorithm: int = 0,
         is_inbox_tag: bool = False,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         return await self._post(
             "/api/tags/",
             json={
@@ -259,14 +259,14 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
     async def update_correspondent(
         self, correspondent: Correspondent
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         correspondent_json = correspondent.to_json()
 
         return await self._patch(
             f"/api/correspondents/{correspondent.id}/", json=correspondent_json
         )
 
-    async def new_correspondent(self, name: str, slug: str) -> dict[str, object]:
+    async def new_correspondent(self, name: str, slug: str) -> dict[str, Any]:
         return await self._post(
             "/api/correspondents/",
             json={
@@ -309,16 +309,14 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
         raise ObjectNotFound(f"No storage path found matching '{name}'")
 
-    async def update_document_type(
-        self, document_type: DocumentType
-    ) -> dict[str, object]:
+    async def update_document_type(self, document_type: DocumentType) -> dict[str, Any]:
         document_type_json = document_type.to_json()
 
         return await self._patch(
             f"/api/document_types/{document_type.id}/", json=document_type_json
         )
 
-    async def new_document_type(self, name: str, slug: str) -> dict[str, object]:
+    async def new_document_type(self, name: str, slug: str) -> dict[str, Any]:
         return await self._post(
             "/api/document_types/",
             json={
@@ -349,7 +347,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         self._cached_custom_fields[field] = cf
         return cf
 
-    async def new_custom_field(self, name: str, data_type: str) -> dict[str, object]:
+    async def new_custom_field(self, name: str, data_type: str) -> dict[str, Any]:
         return await self._post(
             "/api/custom_fields/", json={"name": name, "data_type": data_type}
         )
@@ -380,7 +378,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         mime_type: str | None = "application/pdf",
         required_tags: None | Collection[Tag] = None,
         excluded_tags: None | Collection[Tag] = None,
-    ) -> AsyncGenerator[object, None]:
+    ) -> AsyncGenerator[Document, None]:
         """Retrieve documents based on the required tags."""
         filter = self._document_query(mime_type, required_tags, excluded_tags)
 
@@ -403,7 +401,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
             "fields": "id",
             # We set the page size to 1, because we don't care about the
             # returned values, we care only of the "all" field returned.
-            "page_size": 1,
+            "page_size": "1",
             **self._document_query(mime_type, required_tags, excluded_tags),
         }
 
@@ -427,7 +425,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         resp_json = await self._get(f"/api/documents/{document_id}/metadata/", {})
         return DocumentMetadata(**resp_json)
 
-    async def update_document(self, document: Document) -> dict[str, object]:
+    async def update_document(self, document: Document) -> dict[str, Any]:
         document_json = document.to_json()
 
         return await self._patch(f"/api/documents/{document.id}/", json=document_json)

@@ -38,10 +38,7 @@ Homepage = "https://github.com/Flameeyes/flameeyes-paperless-automation"
 
 [dependency-groups]
 dev = [
-  "pytest-mypy",
-  "mypy",
-  "types-click-log",
-  "types-setuptools",
+  "ty",
 ]
 
 [build-system]
@@ -64,5 +61,5 @@ target-version = "py313"
 select = ["E", "F", "I"]
 ignore = ["E501"]
 
-[tool.mypy]
-python_version = "3.13"
+[tool.ty.environment]
+python-version = "3.13"

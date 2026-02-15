@@ -134,14 +134,15 @@ async def ensure_setup(ctx: click.Context) -> None:
                 await s.update_document_type(document_type)
 
         # Now we make sure that the configured objects actually exist.
-        for tag in cfg.predefined_tags.values():
+        for tag_name in cfg.predefined_tags.values():
+            assert isinstance(tag_name, str)
             try:
-                await s.lookup_tag(tag)
+                await s.lookup_tag(tag_name)
             except ObjectNotFound:
                 if execute:
-                    await s.new_tag(tag, to_slug(tag))
+                    await s.new_tag(tag_name, to_slug(tag_name))
                 else:
-                    LOGGER.info(f"We should create the tag '{tag}'")
+                    LOGGER.info(f"We should create the tag '{tag_name}'")
 
         # This creates the custom fields if we didn't have them already.
         try:

@@ -87,11 +87,12 @@ async def identify_document(
         for custom_field in doc.custom_field_values
         if custom_field.field not in overwrite_fields
     ]
-    doc.custom_field_values.append(
-        CustomFieldValue(
-            field=field_account_holder.id, value=result.normalized_account_holders
+    if result.normalized_account_holders is not None:
+        doc.custom_field_values.append(
+            CustomFieldValue(
+                field=field_account_holder.id, value=result.normalized_account_holders
+            )
         )
-    )
 
     if result.account_number is not None:
         doc.custom_field_values.append(
