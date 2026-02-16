@@ -269,6 +269,10 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
         raise ObjectNotFound(f"No correspondent found matching '{name}'")
 
+    async def lookup_correspondent_by_id(self, correspondent_id: int) -> Correspondent:
+        resp_json = await self._get(f"/api/correspondents/{correspondent_id}/", {})
+        return Correspondent(**self._filter_fields(Correspondent, resp_json))
+
     async def update_correspondent(
         self, correspondent: Correspondent
     ) -> dict[str, Any]:
@@ -304,6 +308,10 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
                 return obj
 
         raise ObjectNotFound(f"No document type found matching '{name}'")
+
+    async def lookup_document_type_by_id(self, document_type_id: int) -> DocumentType:
+        resp_json = await self._get(f"/api/document_types/{document_type_id}/", {})
+        return DocumentType(**self._filter_fields(DocumentType, resp_json))
 
     async def storage_paths(
         self, full_permissions: bool = False
