@@ -11,6 +11,14 @@ from typing import Final, NotRequired, Self, TypedDict
 CONFIG_FILE: Final[Path] = Path("./paperless-automation.toml")
 
 
+class VisionConfig(TypedDict, total=False):
+    ollama_url: str
+    model: str
+    examples_dir: str
+    max_few_shot_examples: int
+    pages_to_process: int
+
+
 class Aliases(TypedDict):
     account_holder: NotRequired[Mapping[str, str]]
     correspondent: NotRequired[Mapping[str, str]]
@@ -42,6 +50,28 @@ class Config:
     predefined_storage_paths: PredefinedStoragePaths
 
     aliases: Aliases
+
+    vision: VisionConfig = dataclasses.field(default_factory=dict)
+
+    @property
+    def vision_ollama_url(self) -> str:
+        return self.vision.get("ollama_url", "http://localhost:11434")
+
+    @property
+    def vision_model(self) -> str:
+        return self.vision.get("model", "qwen2.5vl:3b")
+
+    @property
+    def vision_examples_dir(self) -> Path:
+        return Path(self.vision.get("examples_dir", "./vision-examples"))
+
+    @property
+    def vision_max_few_shot_examples(self) -> int:
+        return int(self.vision.get("max_few_shot_examples", 3))
+
+    @property
+    def vision_pages_to_process(self) -> int:
+        return int(self.vision.get("pages_to_process", 2))
 
     def lookup_account_holder(self, account_holder: str) -> str:
         return self.aliases.get("account_holder", {}).get(

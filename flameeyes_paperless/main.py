@@ -22,6 +22,7 @@ from .utils import (
     lookup_account_custom_fields,
     to_slug,
 )
+from .vision import export_training_example, vision_identify_document
 
 click_log.basic_config(LOGGER)
 
@@ -332,3 +333,158 @@ async def sort_scanned(ctx, *, only_inbox: bool) -> None:
             if execute:
                 await s.update_document(doc)
                 LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
+
+
+def _parse_document_ref(doc_ref: str, doc_url_pattern: re.Pattern[str]) -> int:
+    """Parse a document reference (ID or Paperless URL) to a document ID."""
+    try:
+        return int(doc_ref)
+    except ValueError:
+        if not (m := doc_url_pattern.fullmatch(doc_ref)):
+            raise click.UsageError(f"Argument '{doc_ref}' is not recognized!")
+        return int(m.group("document_id"))
+
+
+@main.command("vision-identify")
+@click.pass_context
+@click.argument(
+    "documents",
+    type=str,
+    required=True,
+    nargs=-1,
+)
+@coro
+async def vision_identify(ctx: click.Context, *, documents: Sequence[str]) -> None:
+    """Identify documents using computer vision (VLM) extraction."""
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
+
+    async with PaperlessSession(cfg) as s:
+        for doc_ref in documents:
+            document_id = _parse_document_ref(doc_ref, doc_url_pattern)
+            doc = await s.lookup_document(document_id)
+            LOGGER.info(f"Found document: {doc.title}")
+
+            if identified_doc := await vision_identify_document(
+                execute=execute, session=s, doc=doc
+            ):
+                if execute:
+                    await s.update_document(identified_doc)
+                    LOGGER.info(f"Document '{doc.title}' updated.")
+
+
+@main.command("vision-identify-all")
+@click.option(
+    "--exclude-identified / --no-exclude-identified",
+    is_flag=True,
+    default=True,
+    help="Whether to exclude documents already tagged as identified.",
+)
+@click.option(
+    "--require-scanned / --no-require-scanned",
+    is_flag=True,
+    default=True,
+    help="Whether to require documents to be tagged as scanned.",
+)
+@click.option(
+    "--only-inbox / --no-only-inbox",
+    is_flag=True,
+    default=True,
+    help="Whether to only process documents tagged with the configured inbox tag.",
+)
+@click.pass_context
+@coro
+async def vision_identify_all(
+    ctx: click.Context,
+    *,
+    exclude_identified: bool,
+    require_scanned: bool,
+    only_inbox: bool,
+) -> None:
+    """Identify all scanned documents using computer vision (VLM) extraction."""
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    if only_inbox and "inbox" not in cfg.predefined_tags:
+        raise click.UsageError(
+            "Unable to use --only-inbox if no inbox tag is configured."
+        )
+
+    if require_scanned and "scanned" not in cfg.predefined_tags:
+        raise click.UsageError(
+            "Unable to use --require-scanned if no scanned tag is configured."
+        )
+
+    async with PaperlessSession(cfg) as s:
+        required_tags = []
+        excluded_tags = []
+
+        if only_inbox:
+            inbox_tag = await s.lookup_tag(cfg.predefined_tags["inbox"])
+            required_tags.append(inbox_tag)
+
+        if exclude_identified and "identified" in cfg.predefined_tags:
+            identified_tag = await s.lookup_tag(cfg.predefined_tags["identified"])
+            excluded_tags.append(identified_tag)
+
+        if require_scanned:
+            scanned_tag = await s.lookup_tag(cfg.predefined_tags["scanned"])
+            required_tags.append(scanned_tag)
+
+        async for doc in s.documents(
+            required_tags=required_tags if required_tags else None,
+            excluded_tags=excluded_tags if excluded_tags else None,
+        ):
+            if identified_doc := await vision_identify_document(
+                execute=execute, session=s, doc=doc
+            ):
+                if execute:
+                    await s.update_document(identified_doc)
+                    LOGGER.info(f"Document {doc.id} '{doc.title}' updated.")
+
+
+@main.command("vision-train")
+@click.pass_context
+@click.argument(
+    "documents",
+    type=str,
+    required=True,
+    nargs=-1,
+)
+@click.option(
+    "--examples-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Directory to export training examples to. Defaults to config value.",
+)
+@coro
+async def vision_train(
+    ctx: click.Context,
+    *,
+    documents: Sequence[str],
+    examples_dir: Path | None,
+) -> None:
+    """Export documents as training examples for VLM few-shot prompting.
+
+    Uses the document's current Paperless metadata (correspondent, document type,
+    custom fields) as ground truth. Pass document IDs or Paperless document URLs.
+    """
+    cfg = Config.from_file()
+    effective_examples_dir = examples_dir or cfg.vision_examples_dir
+
+    doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
+
+    async with PaperlessSession(cfg) as s:
+        for doc_ref in documents:
+            document_id = _parse_document_ref(doc_ref, doc_url_pattern)
+            doc = await s.lookup_document(document_id)
+            LOGGER.info(f"Exporting training example for: {doc.title} ({doc.id})")
+
+            example_path = await export_training_example(
+                session=s,
+                doc=doc,
+                examples_dir=effective_examples_dir,
+            )
+            click.echo(f"Exported: {example_path}")

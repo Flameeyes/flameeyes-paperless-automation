@@ -18,3 +18,10 @@ scanned_storage_path = "Scanned"
 scan_software = [
   "PaperPort",
 ]
+
+[vision]
+# ollama_url = "http://localhost:11434"
+# model = "qwen2.5vl:3b"
+# examples_dir = "./vision-examples"
+# max_few_shot_examples = 3
+# pages_to_process = 2

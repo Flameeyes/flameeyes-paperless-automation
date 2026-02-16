@@ -27,6 +27,8 @@ dependencies = [
   "click-log",
   "more_itertools",
   "pdfrenamer @ git+https://github.com/Flameeyes/pdfrename",
+  "pymupdf>=1.27.1",
+  "ollama>=0.6.1",
 ]
 
 [project.scripts]
