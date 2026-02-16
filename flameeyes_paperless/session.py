@@ -146,10 +146,22 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         resp.raise_for_status()
         return await resp.json()
 
+    @staticmethod
+    def _filter_fields(cls: type, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Filter a JSON dict to only fields accepted by the given dataclass.
+
+        Uses __dataclass_fields__ instead of dataclasses.fields() to also
+        include InitVar fields, which are accepted by __init__ but not
+        returned by dataclasses.fields().
+        """
+        known = cls.__dataclass_fields__.keys()  # type: ignore[attr-defined]
+        return {k: v for k, v in data.items() if k in known}
+
     def _extract_objects(
         self, object_type: ObjectType, resp_json: dict[str, Any]
     ) -> Iterator[Any]:
-        return (_TYPE_TO_STRUCTURE[object_type](**obj) for obj in resp_json["results"])
+        cls = _TYPE_TO_STRUCTURE[object_type]
+        return (cls(**self._filter_fields(cls, obj)) for obj in resp_json["results"])
 
     @staticmethod
     def _fix_next_url(next_url: str | None) -> str | None:
@@ -412,7 +424,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
     async def lookup_document(self, document_id: int) -> Document:
         resp_json = await self._get(f"/api/documents/{document_id}/", {})
-        return Document(**resp_json)
+        return Document(**self._filter_fields(Document, resp_json))
 
     async def retrieve_document(
         self, document_id: int, original: bool = False
@@ -423,7 +435,7 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
     async def retrieve_document_metadata(self, document_id: int) -> DocumentMetadata:
         resp_json = await self._get(f"/api/documents/{document_id}/metadata/", {})
-        return DocumentMetadata(**resp_json)
+        return DocumentMetadata(**self._filter_fields(DocumentMetadata, resp_json))
 
     async def update_document(self, document: Document) -> dict[str, Any]:
         document_json = document.to_json()
