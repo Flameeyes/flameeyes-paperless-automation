@@ -28,12 +28,14 @@ async def identify_document(
 
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
 
-    field_account_holder, field_account_number, field_document_number = (
-        await asyncio.gather(
-            session.cached_custom_field(DefaultCustomField.ACCOUNT_HOLDER),
-            session.cached_custom_field(DefaultCustomField.ACCOUNT_NUMBER),
-            session.cached_custom_field(DefaultCustomField.DOCUMENT_NUMBER),
-        )
+    (
+        field_account_holder,
+        field_account_number,
+        field_document_number,
+    ) = await asyncio.gather(
+        session.cached_custom_field(DefaultCustomField.ACCOUNT_HOLDER),
+        session.cached_custom_field(DefaultCustomField.ACCOUNT_NUMBER),
+        session.cached_custom_field(DefaultCustomField.DOCUMENT_NUMBER),
     )
 
     content = await session.retrieve_document(doc.id, original=True)

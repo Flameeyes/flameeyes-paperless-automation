@@ -17,7 +17,7 @@ from .session import PaperlessSession
 from .types import CustomFieldValue, Document
 from .utils import LOGGER, ensure_correspondent, ensure_document_type
 
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_BASE = """\
 You are a document analysis assistant. Your task is to extract structured \
 information from scanned document images.
 
@@ -39,6 +39,34 @@ number for this individual document. Return null if not found.
 Return ONLY a valid JSON object with these exact keys. Do not include any \
 explanation or additional text.\
 """
+
+
+def _build_system_prompt(config: Config) -> str:
+    """Build the system prompt, appending alias information if configured."""
+    parts = [_SYSTEM_PROMPT_BASE]
+
+    aliases = config.aliases
+    alias_sections: list[str] = []
+
+    for category, label in (
+        ("correspondent", "correspondent"),
+        ("account_holder", "account holder"),
+        ("document_type", "document type"),
+    ):
+        mapping = aliases.get(category, {})
+        if mapping:
+            lines = ", ".join(f'"{src}" → "{dst}"' for src, dst in mapping.items())
+            alias_sections.append(f"  {label}: {lines}")
+
+    if alias_sections:
+        parts.append(
+            "\n\nWhen extracting fields, prefer these canonical names "
+            "(left side should be replaced with the right side):\n"
+            + "\n".join(alias_sections)
+        )
+
+    return "".join(parts)
+
 
 USER_PROMPT = "Analyze this document and extract the structured fields."
 
@@ -157,8 +185,10 @@ async def extract_with_vision(
         max_examples=config.vision_max_few_shot_examples,
     )
 
+    system_prompt = _build_system_prompt(config)
+
     messages: list[ollama.Message] = [
-        ollama.Message(role="system", content=SYSTEM_PROMPT),
+        ollama.Message(role="system", content=system_prompt),
     ]
 
     # Few-shot examples as user/assistant turn pairs (first page only per example)
@@ -339,7 +369,9 @@ async def export_training_example(
     correspondent_name = None
     if doc.correspondent is not None:
         try:
-            correspondent_obj = await session.lookup_correspondent_by_id(doc.correspondent)
+            correspondent_obj = await session.lookup_correspondent_by_id(
+                doc.correspondent
+            )
             correspondent_name = correspondent_obj.name
         except Exception:
             LOGGER.warning("Could not resolve correspondent ID %d", doc.correspondent)

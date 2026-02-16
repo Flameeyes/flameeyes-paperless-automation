@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 import contextlib
-from collections.abc import AsyncGenerator, AsyncIterator, Collection, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Collection, Iterator, Mapping
 from enum import StrEnum
 from functools import cached_property
 from typing import Any, Final, Self
