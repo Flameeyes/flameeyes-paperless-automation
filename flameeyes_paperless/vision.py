@@ -10,6 +10,7 @@ import re
 import time
 from pathlib import Path
 
+import httpx
 import ollama
 
 from .config import Config
@@ -403,7 +404,13 @@ async def extract_with_vision(
         )
     )
 
-    client = ollama.AsyncClient(host=config.vision_ollama_url)
+    timeout = config.vision_timeout
+    client = ollama.AsyncClient(
+        host=config.vision_ollama_url,
+        timeout=httpx.Timeout(
+            connect=30.0, read=timeout or None, write=None, pool=None
+        ),
+    )
 
     # Verify the model exists before sending the expensive request.
     try:
@@ -448,6 +455,9 @@ async def extract_with_vision(
         async for chunk in stream:
             if chunk.message.content:
                 chunks.append(chunk.message.content)
+    except httpx.ReadTimeout:
+        LOGGER.error("VLM request timed out after %.0fs (no data received)", timeout)
+        return None, time.monotonic() - start_time
     except ollama.ResponseError as e:
         LOGGER.error("Ollama request failed: %s", e)
         return None, time.monotonic() - start_time

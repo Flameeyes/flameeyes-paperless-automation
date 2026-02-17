@@ -73,6 +73,11 @@ class Config:
     def vision_pages_to_process(self) -> int:
         return int(self.vision.get("pages_to_process", 2))
 
+    @property
+    def vision_timeout(self) -> float:
+        """Timeout in seconds for VLM requests. 0 means no timeout."""
+        return float(self.vision.get("timeout", 0))
+
     def lookup_account_holder(self, account_holder: str) -> str:
         return self.aliases.get("account_holder", {}).get(
             account_holder, account_holder
