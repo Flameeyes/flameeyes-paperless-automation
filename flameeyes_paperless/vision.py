@@ -4,6 +4,7 @@
 
 import dataclasses
 import datetime
+import enum
 import json
 import re
 import time
@@ -68,7 +69,37 @@ def _build_system_prompt(config: Config) -> str:
     return "".join(parts)
 
 
-USER_PROMPT = "Analyze this document and extract the structured fields."
+EXAMPLE_PROMPT = (
+    "Here is an example document. Extract the structured fields. "
+    "Note that the expected output uses the canonical names from the alias "
+    "mappings described in the system prompt."
+)
+
+USER_PROMPT = (
+    "Now analyze the following NEW document and extract its structured fields. "
+    "Only use information visible in this document — do not carry over any "
+    "values from the previous examples."
+)
+
+_RESPONSE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "correspondent": {"type": ["string", "null"]},
+        "document_type": {"type": ["string", "null"]},
+        "date": {"type": ["string", "null"]},
+        "account_holders": {"type": "array", "items": {"type": "string"}},
+        "account_number": {"type": ["string", "null"]},
+        "document_number": {"type": ["string", "null"]},
+    },
+    "required": [
+        "correspondent",
+        "document_type",
+        "date",
+        "account_holders",
+        "account_number",
+        "document_number",
+    ],
+}
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -81,6 +112,68 @@ class VisionComponents:
     document_number: str | None = None
 
 
+class FieldResult(enum.StrEnum):
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    BOTH_NULL = "both_null"
+    FALSE_POSITIVE = "false_positive"
+    FALSE_NEGATIVE = "false_negative"
+
+
+def compare_results(
+    extracted: VisionComponents, expected: VisionComponents
+) -> dict[str, FieldResult]:
+    """Compare extracted VisionComponents against expected, field by field."""
+    results: dict[str, FieldResult] = {}
+
+    for field_name in (
+        "correspondent",
+        "document_type",
+        "account_number",
+        "document_number",
+    ):
+        ext = getattr(extracted, field_name)
+        exp = getattr(expected, field_name)
+        if ext is None and exp is None:
+            results[field_name] = FieldResult.BOTH_NULL
+        elif ext is not None and exp is None:
+            results[field_name] = FieldResult.FALSE_POSITIVE
+        elif ext is None and exp is not None:
+            results[field_name] = FieldResult.FALSE_NEGATIVE
+        elif ext.lower() == exp.lower():
+            results[field_name] = FieldResult.MATCH
+        else:
+            results[field_name] = FieldResult.MISMATCH
+
+    # Date: exact match
+    if extracted.date is None and expected.date is None:
+        results["date"] = FieldResult.BOTH_NULL
+    elif extracted.date is not None and expected.date is None:
+        results["date"] = FieldResult.FALSE_POSITIVE
+    elif extracted.date is None and expected.date is not None:
+        results["date"] = FieldResult.FALSE_NEGATIVE
+    elif extracted.date == expected.date:
+        results["date"] = FieldResult.MATCH
+    else:
+        results["date"] = FieldResult.MISMATCH
+
+    # Account holders: set comparison, case-insensitive
+    ext_holders = {h.lower() for h in extracted.account_holders}
+    exp_holders = {h.lower() for h in expected.account_holders}
+    if not ext_holders and not exp_holders:
+        results["account_holders"] = FieldResult.BOTH_NULL
+    elif ext_holders and not exp_holders:
+        results["account_holders"] = FieldResult.FALSE_POSITIVE
+    elif not ext_holders and exp_holders:
+        results["account_holders"] = FieldResult.FALSE_NEGATIVE
+    elif ext_holders == exp_holders:
+        results["account_holders"] = FieldResult.MATCH
+    else:
+        results["account_holders"] = FieldResult.MISMATCH
+
+    return results
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class FewShotExample:
     images: list[bytes]
@@ -88,7 +181,7 @@ class FewShotExample:
 
 
 def pdf_to_images(
-    pdf_bytes: bytes, *, dpi: int = 300, max_pages: int = 2
+    pdf_bytes: bytes, *, dpi: int = 150, max_pages: int = 2
 ) -> list[bytes]:
     """Render up to max_pages pages of a PDF as PNG bytes."""
     import fitz
@@ -131,19 +224,49 @@ def load_few_shot_examples(
     return examples
 
 
+def _fix_json(text: str) -> str:
+    """Best-effort fixup of common LLM JSON issues (trailing commas, etc.)."""
+    # Remove trailing commas before } or ]
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
+
+
 def _parse_vision_response(raw_text: str) -> VisionComponents | None:
     """Parse the VLM JSON response into VisionComponents."""
     text = raw_text.strip()
+
+    # Strip thinking model's <think>...</think> reasoning block.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
         text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
         text = text.strip()
 
+    # Extract the first JSON object if there's extra text around it.
+    if (start := text.find("{")) != -1:
+        # Find matching closing brace
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    text = text[start : i + 1]
+                    break
+
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as e:
-        LOGGER.warning("Failed to parse VLM response as JSON: %s\nRaw: %s", e, raw_text)
-        return None
+    except json.JSONDecodeError:
+        # Retry with common fixups
+        try:
+            data = json.loads(_fix_json(text))
+        except json.JSONDecodeError as e:
+            LOGGER.warning(
+                "Failed to parse VLM response as JSON: %s\nRaw: %s", e, raw_text
+            )
+            return None
 
     date_val = None
     if raw_date := data.get("date"):
@@ -166,19 +289,83 @@ def _parse_vision_response(raw_text: str) -> VisionComponents | None:
     )
 
 
+async def document_to_vision_components(
+    session: PaperlessSession, doc: Document
+) -> VisionComponents:
+    """Build VisionComponents from a Paperless document's current state (ground truth)."""
+    correspondent_name = None
+    if doc.correspondent is not None:
+        try:
+            obj = await session.lookup_correspondent_by_id(doc.correspondent)
+            correspondent_name = obj.name
+        except Exception:
+            LOGGER.warning("Could not resolve correspondent ID %d", doc.correspondent)
+
+    document_type_name = None
+    if doc.document_type is not None:
+        try:
+            obj = await session.lookup_document_type_by_id(doc.document_type)
+            document_type_name = obj.name
+        except Exception:
+            LOGGER.warning("Could not resolve document type ID %d", doc.document_type)
+
+    field_account_holder = await session.cached_custom_field(
+        DefaultCustomField.ACCOUNT_HOLDER
+    )
+    field_account_number = await session.cached_custom_field(
+        DefaultCustomField.ACCOUNT_NUMBER
+    )
+    field_document_number = await session.cached_custom_field(
+        DefaultCustomField.DOCUMENT_NUMBER
+    )
+
+    account_holders: list[str] = []
+    account_number = None
+    document_number = None
+
+    for cfv in doc.custom_field_values:
+        if cfv.field == field_account_holder.id:
+            account_holders = [h.strip() for h in cfv.value.split(",") if h.strip()]
+        elif cfv.field == field_account_number.id:
+            account_number = cfv.value
+        elif cfv.field == field_document_number.id:
+            document_number = cfv.value
+
+    date_val = None
+    if doc.created_date:
+        try:
+            date_val = datetime.date.fromisoformat(doc.created_date)
+        except (ValueError, TypeError):
+            LOGGER.warning("Could not parse document date %r", doc.created_date)
+
+    return VisionComponents(
+        correspondent=correspondent_name,
+        document_type=document_type_name,
+        date=date_val,
+        account_holders=tuple(account_holders),
+        account_number=account_number or None,
+        document_number=document_number or None,
+    )
+
+
 async def extract_with_vision(
     *,
     pdf_bytes: bytes,
     config: Config,
-) -> VisionComponents | None:
-    """Call the Ollama VLM to extract document fields from PDF bytes."""
+    model: str | None = None,
+) -> tuple[VisionComponents | None, float]:
+    """Call the Ollama VLM to extract document fields from PDF bytes.
+
+    Returns a tuple of (result, elapsed_seconds).
+    """
+    effective_model = model or config.vision_model
     images = pdf_to_images(
         pdf_bytes,
         max_pages=config.vision_pages_to_process,
     )
     if not images:
         LOGGER.warning("No pages rendered from PDF")
-        return None
+        return None, 0.0
 
     few_shot = load_few_shot_examples(
         config.vision_examples_dir,
@@ -196,7 +383,7 @@ async def extract_with_vision(
         messages.append(
             ollama.Message(
                 role="user",
-                content=USER_PROMPT,
+                content=EXAMPLE_PROMPT,
                 images=[ollama.Image(value=example.images[0])],
             )
         )
@@ -218,29 +405,57 @@ async def extract_with_vision(
 
     client = ollama.AsyncClient(host=config.vision_ollama_url)
 
+    # Verify the model exists before sending the expensive request.
+    try:
+        await client.show(effective_model)
+    except ollama.ResponseError as e:
+        LOGGER.error("Model %s not available: %s", effective_model, e)
+        return None, 0.0
+
+    # Some models (e.g. qwen3-vl, thinking models) don't support Ollama's
+    # grammar-constrained JSON output well.  Skip the format parameter for
+    # those and rely on _parse_vision_response() instead.
+    use_format = "qwen3" not in effective_model.lower()
+
+    # Scale context window with the number of images: each VLM image token
+    # block is roughly 2,000-3,000 tokens depending on the model.  We budget
+    # ~3,000 tokens per image plus a generous base for the system prompt,
+    # JSON scaffolding, and response generation.
+    total_images = sum(1 for ex in few_shot for _ in ex.images) + len(images)
+    num_ctx = max(8192, 4096 + total_images * 3072)
+
     LOGGER.debug(
-        "Sending %d messages (%d few-shot examples, %d document pages) to %s",
+        "Sending %d messages (%d few-shot examples, %d document pages) to %s"
+        " (format=%s, num_ctx=%d)",
         len(messages),
         len(few_shot),
         len(images),
-        config.vision_model,
+        effective_model,
+        "schema" if use_format else "none",
+        num_ctx,
     )
     start_time = time.monotonic()
 
     try:
-        response = await client.chat(
-            model=config.vision_model,
+        stream = await client.chat(
+            model=effective_model,
             messages=messages,
-            options=ollama.Options(temperature=0.0, num_ctx=16384),
+            format=_RESPONSE_SCHEMA if use_format else None,
+            options=ollama.Options(temperature=0.0, num_ctx=num_ctx),
+            stream=True,
         )
+        chunks: list[str] = []
+        async for chunk in stream:
+            if chunk.message.content:
+                chunks.append(chunk.message.content)
     except ollama.ResponseError as e:
         LOGGER.error("Ollama request failed: %s", e)
-        return None
+        return None, time.monotonic() - start_time
 
     elapsed = time.monotonic() - start_time
-    raw_text = response.message.content or ""
+    raw_text = "".join(chunks)
     LOGGER.debug("VLM response in %.1fs: %s", elapsed, raw_text)
-    return _parse_vision_response(raw_text)
+    return _parse_vision_response(raw_text), elapsed
 
 
 async def vision_identify_document(
@@ -261,7 +476,7 @@ async def vision_identify_document(
 
     content = await session.retrieve_document(doc.id, original=True)
 
-    result = await extract_with_vision(
+    result, _elapsed = await extract_with_vision(
         pdf_bytes=content,
         config=session.config,
     )

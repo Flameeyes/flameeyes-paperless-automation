@@ -22,7 +22,14 @@ from .utils import (
     lookup_account_custom_fields,
     to_slug,
 )
-from .vision import export_training_example, vision_identify_document
+from .vision import (
+    FieldResult,
+    compare_results,
+    document_to_vision_components,
+    export_training_example,
+    extract_with_vision,
+    vision_identify_document,
+)
 
 click_log.basic_config(LOGGER)
 
@@ -488,3 +495,133 @@ async def vision_train(
                 examples_dir=effective_examples_dir,
             )
             click.echo(f"Exported: {example_path}")
+
+
+@main.command("vision-benchmark")
+@click.argument(
+    "documents",
+    type=str,
+    required=True,
+    nargs=-1,
+)
+@click.option(
+    "--model",
+    "models",
+    type=str,
+    multiple=True,
+    help="Model to benchmark. Can be specified multiple times. Defaults to config.",
+)
+@click.pass_context
+@coro
+async def vision_benchmark(
+    ctx: click.Context,
+    *,
+    documents: Sequence[str],
+    models: tuple[str, ...],
+) -> None:
+    """Benchmark VLM extraction accuracy against already-identified documents."""
+    cfg = Config.from_file()
+
+    doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
+
+    effective_models = models if models else (cfg.vision_model,)
+
+    # Per-model aggregate stats
+    model_totals: dict[str, int] = {m: 0 for m in effective_models}
+    model_matches: dict[str, int] = {m: 0 for m in effective_models}
+    model_times: dict[str, list[float]] = {m: [] for m in effective_models}
+
+    async with PaperlessSession(cfg) as s:
+        for doc_ref in documents:
+            document_id = _parse_document_ref(doc_ref, doc_url_pattern)
+            doc = await s.lookup_document(document_id)
+
+            expected = await document_to_vision_components(s, doc)
+
+            click.echo(f'\nDocument {doc.id} "{doc.title}" — ground truth:')
+            click.echo(
+                f"  correspondent: {expected.correspondent} | "
+                f"type: {expected.document_type} | "
+                f"date: {expected.date}"
+            )
+            click.echo(
+                f"  holders: {', '.join(expected.account_holders) or '(none)'} | "
+                f"account: {expected.account_number} | "
+                f"doc_num: {expected.document_number}"
+            )
+
+            pdf_bytes = await s.retrieve_document(doc.id, original=True)
+
+            for model_name in effective_models:
+                result, elapsed = await extract_with_vision(
+                    pdf_bytes=pdf_bytes,
+                    config=cfg,
+                    model=model_name,
+                )
+
+                model_times[model_name].append(elapsed)
+
+                if result is None:
+                    click.echo(f"\n  {model_name} ({elapsed:.0f}s): FAILED")
+                    fields = (
+                        "correspondent",
+                        "document_type",
+                        "date",
+                        "account_holders",
+                        "account_number",
+                        "document_number",
+                    )
+                    model_totals[model_name] += len(fields)
+                    continue
+
+                # Apply alias resolution (same as vision_identify_document)
+                normalized_holders = tuple(
+                    cfg.lookup_account_holder(h) for h in result.account_holders
+                )
+                result = dataclasses.replace(result, account_holders=normalized_holders)
+
+                if result.correspondent:
+                    result = dataclasses.replace(
+                        result,
+                        correspondent=cfg.lookup_correspondent(result.correspondent),
+                    )
+
+                if result.document_type:
+                    result = dataclasses.replace(
+                        result,
+                        document_type=cfg.lookup_document_type(result.document_type),
+                    )
+
+                comparison = compare_results(result, expected)
+                model_totals[model_name] += len(comparison)
+                model_matches[model_name] += sum(
+                    1
+                    for r in comparison.values()
+                    if r in (FieldResult.MATCH, FieldResult.BOTH_NULL)
+                )
+
+                click.echo(f"\n  {model_name} ({elapsed:.0f}s):")
+                line_parts: list[str] = []
+                for field_name, field_result in comparison.items():
+                    part = f"{field_name}: {field_result.value.upper()}"
+                    if field_result == FieldResult.MISMATCH:
+                        got = getattr(result, field_name)
+                        part += f" (got {got})"
+                    line_parts.append(part)
+                # Print in two rows of three
+                click.echo(f"    {line_parts[0]}  {line_parts[1]}  {line_parts[2]}")
+                if len(line_parts) > 3:
+                    click.echo(f"    {'  '.join(line_parts[3:])}")
+
+    # Summary
+    if len(documents) > 1 or len(effective_models) > 1:
+        click.echo(f"\nSummary ({len(documents)} documents):")
+        click.echo(f"  {'Model':<25} | {'Accuracy':>15} | {'Avg Time':>10}")
+        for model_name in effective_models:
+            total = model_totals[model_name]
+            matched = model_matches[model_name]
+            pct = (matched / total * 100) if total else 0
+            times = model_times[model_name]
+            avg_time = sum(times) / len(times) if times else 0
+            accuracy = f"{matched}/{total} ({pct:.0f}%)"
+            click.echo(f"  {model_name:<25} | {accuracy:>15} | {avg_time:>8.0f}s")
