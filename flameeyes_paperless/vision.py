@@ -43,7 +43,26 @@ explanation or additional text.\
 """
 
 
-def _build_system_prompt(config: Config) -> str:
+def _collect_known_names(
+    few_shot: list["FewShotExample"],
+) -> dict[str, set[str]]:
+    """Extract known correspondent and document_type names from few-shot examples."""
+    names: dict[str, set[str]] = {"correspondent": set(), "document_type": set()}
+    for example in few_shot:
+        try:
+            data = json.loads(example.expected_json)
+        except json.JSONDecodeError:
+            continue
+        for key in names:
+            if value := data.get(key):
+                names[key].add(value)
+    return names
+
+
+def _build_system_prompt(
+    config: Config,
+    known_names: dict[str, set[str]] | None = None,
+) -> str:
     """Build the system prompt, appending alias information if configured."""
     parts = [_SYSTEM_PROMPT_BASE]
 
@@ -66,6 +85,23 @@ def _build_system_prompt(config: Config) -> str:
             "(left side should be replaced with the right side):\n"
             + "\n".join(alias_sections)
         )
+
+    if known_names:
+        known_sections: list[str] = []
+        for key, label in (
+            ("correspondent", "correspondents"),
+            ("document_type", "document types"),
+        ):
+            names = known_names.get(key, set())
+            if names:
+                quoted = ", ".join(f'"{n}"' for n in sorted(names))
+                known_sections.append(f"  Known {label}: {quoted}")
+        if known_sections:
+            parts.append(
+                "\n\nPrefer these known values when they match the document. "
+                "You may still return a new name if none of these fit:\n"
+                + "\n".join(known_sections)
+            )
 
     return "".join(parts)
 
@@ -373,7 +409,8 @@ async def extract_with_vision(
         max_examples=config.vision_max_few_shot_examples,
     )
 
-    system_prompt = _build_system_prompt(config)
+    known_names = _collect_known_names(few_shot)
+    system_prompt = _build_system_prompt(config, known_names=known_names)
 
     messages: list[ollama.Message] = [
         ollama.Message(role="system", content=system_prompt),
