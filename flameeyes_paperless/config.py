@@ -78,6 +78,11 @@ class Config:
         """Timeout in seconds for VLM requests. 0 means no timeout."""
         return float(self.vision.get("timeout", 0))
 
+    @property
+    def vision_retries(self) -> int:
+        """Number of times to retry a failed VLM request. 0 means no retries."""
+        return int(self.vision.get("retries", 0))
+
     def lookup_account_holder(self, account_holder: str) -> str:
         return self.aliases.get("account_holder", {}).get(
             account_holder, account_holder

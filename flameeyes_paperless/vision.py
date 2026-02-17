@@ -431,36 +431,74 @@ async def extract_with_vision(
     total_images = sum(1 for ex in few_shot for _ in ex.images) + len(images)
     num_ctx = max(8192, 4096 + total_images * 3072)
 
+    max_attempts = 1 + config.vision_retries
+
     LOGGER.debug(
         "Sending %d messages (%d few-shot examples, %d document pages) to %s"
-        " (format=%s, num_ctx=%d)",
+        " (format=%s, num_ctx=%d, max_attempts=%d)",
         len(messages),
         len(few_shot),
         len(images),
         effective_model,
         "schema" if use_format else "none",
         num_ctx,
+        max_attempts,
     )
     start_time = time.monotonic()
 
-    try:
-        stream = await client.chat(
-            model=effective_model,
-            messages=messages,
-            format=_RESPONSE_SCHEMA if use_format else None,
-            options=ollama.Options(temperature=0.0, num_ctx=num_ctx),
-            stream=True,
-        )
-        chunks: list[str] = []
-        async for chunk in stream:
-            if chunk.message.content:
-                chunks.append(chunk.message.content)
-    except httpx.ReadTimeout:
-        LOGGER.error("VLM request timed out after %.0fs (no data received)", timeout)
-        return None, time.monotonic() - start_time
-    except ollama.ResponseError as e:
-        LOGGER.error("Ollama request failed: %s", e)
-        return None, time.monotonic() - start_time
+    for attempt in range(1, max_attempts + 1):
+        try:
+            stream = await client.chat(
+                model=effective_model,
+                messages=messages,
+                format=_RESPONSE_SCHEMA if use_format else None,
+                options=ollama.Options(temperature=0.0, num_ctx=num_ctx),
+                stream=True,
+            )
+            chunks: list[str] = []
+            async for chunk in stream:
+                if chunk.message.content:
+                    chunks.append(chunk.message.content)
+            break  # Success
+        except httpx.TimeoutException as e:
+            elapsed = time.monotonic() - start_time
+            if attempt < max_attempts:
+                LOGGER.warning(
+                    "VLM request timed out (attempt %d/%d, %.0fs): %s",
+                    attempt,
+                    max_attempts,
+                    elapsed,
+                    e,
+                )
+                continue
+            LOGGER.error(
+                "VLM request timed out after %d attempts (%.0fs)", attempt, elapsed
+            )
+            return None, elapsed
+        except httpx.HTTPStatusError as e:
+            LOGGER.error("Ollama HTTP error: %s", e)
+            return None, time.monotonic() - start_time
+        except httpx.TransportError as e:
+            elapsed = time.monotonic() - start_time
+            if attempt < max_attempts:
+                LOGGER.warning(
+                    "Ollama connection error (attempt %d/%d, %.0fs): %s",
+                    attempt,
+                    max_attempts,
+                    elapsed,
+                    e,
+                )
+                continue
+            LOGGER.error(
+                "Ollama connection failed after %d attempts (%.0fs): %s",
+                attempt,
+                elapsed,
+                e,
+            )
+            return None, elapsed
+        except ollama.ResponseError as e:
+            LOGGER.error("Ollama request failed: %s", e)
+            return None, time.monotonic() - start_time
 
     elapsed = time.monotonic() - start_time
     raw_text = "".join(chunks)
