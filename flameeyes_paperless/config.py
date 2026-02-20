@@ -26,6 +26,7 @@ class Aliases(TypedDict):
 
 class PredefinedTags(TypedDict, total=True):
     identified: NotRequired[str]
+    vision_identified: NotRequired[str]
     inbox: NotRequired[str]
     scanned: NotRequired[str]
 

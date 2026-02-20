@@ -640,11 +640,14 @@ async def vision_identify_document(
         )
         doc.title = f"{doc.title} - {result.document_number}"
 
-    # Tag as identified
-    if identified_tag_name := session.config.predefined_tags.get("identified"):
-        identified_tag = await session.lookup_tag(identified_tag_name)
-        if identified_tag.id not in doc.tags:
-            doc.tags.append(identified_tag.id)
+    # Tag as vision-identified (prefer vision_identified tag if configured, fall back to identified)
+    vision_tag_name = session.config.predefined_tags.get(
+        "vision_identified"
+    ) or session.config.predefined_tags.get("identified")
+    if vision_tag_name:
+        vision_tag = await session.lookup_tag(vision_tag_name)
+        if vision_tag.id not in doc.tags:
+            doc.tags.append(vision_tag.id)
 
     return doc
 

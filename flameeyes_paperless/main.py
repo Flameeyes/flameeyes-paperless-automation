@@ -432,9 +432,15 @@ async def vision_identify_all(
             inbox_tag = await s.lookup_tag(cfg.predefined_tags["inbox"])
             required_tags.append(inbox_tag)
 
-        if exclude_identified and "identified" in cfg.predefined_tags:
-            identified_tag = await s.lookup_tag(cfg.predefined_tags["identified"])
-            excluded_tags.append(identified_tag)
+        if exclude_identified:
+            if "vision_identified" in cfg.predefined_tags:
+                vision_identified_tag = await s.lookup_tag(
+                    cfg.predefined_tags["vision_identified"]
+                )
+                excluded_tags.append(vision_identified_tag)
+            if "identified" in cfg.predefined_tags:
+                identified_tag = await s.lookup_tag(cfg.predefined_tags["identified"])
+                excluded_tags.append(identified_tag)
 
         if require_scanned:
             scanned_tag = await s.lookup_tag(cfg.predefined_tags["scanned"])
