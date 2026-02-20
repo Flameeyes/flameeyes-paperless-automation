@@ -16,7 +16,7 @@ from .config import Config
 from .identify import identify_document
 from .session import PaperlessSession
 from .utils import LOGGER
-from .vision import vision_identify_document
+from .vision import export_training_example, vision_identify_document
 
 click_log.basic_config(LOGGER)
 
@@ -56,37 +56,71 @@ async def _background_identify(
         LOGGER.exception(f"Background identification failed for {document_id}")
 
 
-async def identify_handler(request: web.Request) -> web.Response:
-    # Only accept POST with JSON body containing a string `document_id`.
+async def _background_learn(cfg: Config, document_id: int) -> None:
+    try:
+        async with PaperlessSession(cfg) as s:
+            doc = await s.lookup_document(document_id)
+            await export_training_example(
+                session=s,
+                doc=doc,
+                examples_dir=cfg.vision_examples_dir,
+            )
+    except Exception:
+        LOGGER.exception(f"Background learn failed for {document_id}")
+
+
+async def _extract_document_id(
+    request: web.Request,
+) -> tuple[int, None] | tuple[None, web.Response]:
+    """Parse and validate the request body, returning (document_id, None) or (None, error_response)."""
     if request.method != "POST":
-        return web.Response(status=405, text="Method Not Allowed")
+        return None, web.Response(status=405, text="Method Not Allowed")
 
     try:
         payload = await request.json()
     except Exception:
-        return web.Response(status=400, text="Invalid or missing JSON body")
+        return None, web.Response(status=400, text="Invalid or missing JSON body")
 
     if not isinstance(payload, dict) or "document" not in payload:
-        return web.Response(status=400, text="Missing 'document' field")
+        return None, web.Response(status=400, text="Missing 'document' field")
 
     document_raw = payload["document"]
     if not isinstance(document_raw, str):
-        return web.Response(status=400, text="'document' must be a string")
+        return None, web.Response(status=400, text="'document' must be a string")
 
-    # Expect a document URL and extract the id using the precompiled pattern.
     pattern = request.app.get("document_url_pattern")
     if pattern is None:
-        return web.Response(
+        return None, web.Response(
             status=500, text="Server misconfigured: missing URL pattern"
         )
 
     m = pattern.fullmatch(document_raw)
     if not m:
-        return web.Response(
+        return None, web.Response(
             status=400, text="Unable to extract document id from 'document' field"
         )
 
-    document_id = int(m.group("document_id"))
+    return int(m.group("document_id")), None
+
+
+async def learn_handler(request: web.Request) -> web.Response:
+    document_id, error = await _extract_document_id(request)
+    if error is not None:
+        return error
+    assert document_id is not None
+
+    cfg: Config = request.app["cfg"]
+
+    asyncio.create_task(_background_learn(cfg, document_id))
+
+    return web.Response(status=200, text="Accepted")
+
+
+async def identify_handler(request: web.Request) -> web.Response:
+    document_id, error = await _extract_document_id(request)
+    if error is not None:
+        return error
+    assert document_id is not None
 
     execute = bool(request.app.get("execute", False))
     vision_fallback = bool(request.app.get("vision_fallback", False))
@@ -126,7 +160,12 @@ def create_app(
 
     app["document_url_pattern"] = document_url_pattern
 
-    app.add_routes([web.post(r"/identify", identify_handler)])
+    app.add_routes(
+        [
+            web.post(r"/identify", identify_handler),
+            web.post(r"/learn", learn_handler),
+        ]
+    )
     return app
 
 
