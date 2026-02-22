@@ -4,6 +4,7 @@
 
 import asyncio
 import io
+import time
 from pathlib import Path
 
 from more_itertools import one
@@ -16,6 +17,7 @@ from pdfrename.lib.utils import (
 )
 
 from .default_objects import DefaultCustomField
+from .metrics import document_identification_seconds, documents_identified_total
 from .session import PaperlessSession
 from .types import CustomFieldValue, Document
 from .utils import LOGGER, ensure_correspondent, ensure_document_type
@@ -27,6 +29,7 @@ async def identify_document(
     apply_pdfminer_log_filters()
 
     LOGGER.info("Processing document %d: '%s'", doc.id, doc.title)
+    _start = time.monotonic()
 
     (
         field_account_holder,
@@ -50,9 +53,17 @@ async def identify_document(
         LOGGER.info("Document identified: %r", result)
     except ValueError:
         LOGGER.warning(f"Unable to find unique name for '{doc.title}' ({doc.id})")
+        documents_identified_total.labels(method="pdfrenamer", status="not_found").inc()
+        document_identification_seconds.labels(method="pdfrenamer").observe(
+            time.monotonic() - _start
+        )
         return None
     except (PSEOF, IndexError):
         LOGGER.warning(f"Error processing '{doc.title}' ({doc.id})")
+        documents_identified_total.labels(method="pdfrenamer", status="error").inc()
+        document_identification_seconds.labels(method="pdfrenamer").observe(
+            time.monotonic() - _start
+        )
         return None
 
     normalized_account_holders = (
@@ -112,6 +123,11 @@ async def identify_document(
     if identified_tag_name := session.config.predefined_tags.get("identified"):
         identified_tag = await session.lookup_tag(identified_tag_name)
         doc.tags.append(identified_tag.id)
+
+    documents_identified_total.labels(method="pdfrenamer", status="success").inc()
+    document_identification_seconds.labels(method="pdfrenamer").observe(
+        time.monotonic() - _start
+    )
 
     if execute:
         await session.update_document(doc)

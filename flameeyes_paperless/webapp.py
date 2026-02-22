@@ -11,9 +11,11 @@ import click
 import click_log
 from aiohttp import web
 from pdfrename.renamers import load_all_renamers
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .config import Config
 from .identify import identify_document
+from .metrics import vision_fallbacks_total
 from .session import PaperlessSession
 from .utils import LOGGER
 from .vision import export_training_example, vision_identify_document
@@ -38,6 +40,8 @@ async def _background_identify(
 
             if not vision_fallback:
                 return
+
+            vision_fallbacks_total.inc()
 
             # Reload the document to get a clean state for vision identification.
             doc = await s.lookup_document(document_id)
@@ -103,6 +107,11 @@ async def _extract_document_id(
     return int(m.group("document_id")), None
 
 
+async def metrics_handler(request: web.Request) -> web.Response:
+    body = generate_latest()
+    return web.Response(body=body, headers={"Content-Type": CONTENT_TYPE_LATEST})
+
+
 async def learn_handler(request: web.Request) -> web.Response:
     document_id, error = await _extract_document_id(request)
     if error is not None:
@@ -164,6 +173,7 @@ def create_app(
         [
             web.post(r"/identify", identify_handler),
             web.post(r"/learn", learn_handler),
+            web.get(r"/metrics", metrics_handler),
         ]
     )
     return app

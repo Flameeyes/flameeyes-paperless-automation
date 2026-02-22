@@ -559,7 +559,7 @@ async def vision_benchmark(
             pdf_bytes = await s.retrieve_document(doc.id, original=True)
 
             for model_name in effective_models:
-                result, elapsed = await extract_with_vision(
+                result, elapsed, _status = await extract_with_vision(
                     pdf_bytes=pdf_bytes,
                     config=cfg,
                     model=model_name,

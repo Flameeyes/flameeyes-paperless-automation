@@ -15,6 +15,14 @@ import ollama
 
 from .config import Config
 from .default_objects import DefaultCustomField
+from .metrics import (
+    document_identification_seconds,
+    documents_identified_total,
+    vlm_context_tokens,
+    vlm_few_shot_examples,
+    vlm_request_seconds,
+    vlm_requests_total,
+)
 from .session import PaperlessSession
 from .types import CustomFieldValue, Document
 from .utils import LOGGER, ensure_correspondent, ensure_document_type
@@ -390,10 +398,12 @@ async def extract_with_vision(
     pdf_bytes: bytes,
     config: Config,
     model: str | None = None,
-) -> tuple[VisionComponents | None, float]:
+) -> tuple[VisionComponents | None, float, str]:
     """Call the Ollama VLM to extract document fields from PDF bytes.
 
-    Returns a tuple of (result, elapsed_seconds).
+    Returns a tuple of (result, elapsed_seconds, status) where status is one of:
+    "success", "parse_error", "timeout", "connection_error", "http_error",
+    "model_unavailable", "no_pages".
     """
     effective_model = model or config.vision_model
     images = pdf_to_images(
@@ -402,7 +412,8 @@ async def extract_with_vision(
     )
     if not images:
         LOGGER.warning("No pages rendered from PDF")
-        return None, 0.0
+        vlm_requests_total.labels(model=effective_model, status="no_pages").inc()
+        return None, 0.0, "no_pages"
 
     few_shot = load_few_shot_examples(
         config.vision_examples_dir,
@@ -454,7 +465,10 @@ async def extract_with_vision(
         await client.show(effective_model)
     except ollama.ResponseError as e:
         LOGGER.error("Model %s not available: %s", effective_model, e)
-        return None, 0.0
+        vlm_requests_total.labels(
+            model=effective_model, status="model_unavailable"
+        ).inc()
+        return None, 0.0, "model_unavailable"
 
     # Some models (e.g. qwen3-vl, thinking models) don't support Ollama's
     # grammar-constrained JSON output well.  Skip the format parameter for
@@ -467,6 +481,9 @@ async def extract_with_vision(
     # JSON scaffolding, and response generation.
     total_images = sum(1 for ex in few_shot for _ in ex.images) + len(images)
     num_ctx = max(8192, 4096 + total_images * 3072)
+
+    vlm_context_tokens.labels(model=effective_model).observe(num_ctx)
+    vlm_few_shot_examples.labels(model=effective_model).set(len(few_shot))
 
     max_attempts = 1 + config.vision_retries
 
@@ -511,10 +528,15 @@ async def extract_with_vision(
             LOGGER.error(
                 "VLM request timed out after %d attempts (%.0fs)", attempt, elapsed
             )
-            return None, elapsed
+            vlm_requests_total.labels(model=effective_model, status="timeout").inc()
+            vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+            return None, elapsed, "timeout"
         except httpx.HTTPStatusError as e:
+            elapsed = time.monotonic() - start_time
             LOGGER.error("Ollama HTTP error: %s", e)
-            return None, time.monotonic() - start_time
+            vlm_requests_total.labels(model=effective_model, status="http_error").inc()
+            vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+            return None, elapsed, "http_error"
         except httpx.TransportError as e:
             elapsed = time.monotonic() - start_time
             if attempt < max_attempts:
@@ -532,15 +554,29 @@ async def extract_with_vision(
                 elapsed,
                 e,
             )
-            return None, elapsed
+            vlm_requests_total.labels(
+                model=effective_model, status="connection_error"
+            ).inc()
+            vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+            return None, elapsed, "connection_error"
         except ollama.ResponseError as e:
+            elapsed = time.monotonic() - start_time
             LOGGER.error("Ollama request failed: %s", e)
-            return None, time.monotonic() - start_time
+            vlm_requests_total.labels(model=effective_model, status="http_error").inc()
+            vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+            return None, elapsed, "http_error"
 
     elapsed = time.monotonic() - start_time
     raw_text = "".join(chunks)
     LOGGER.debug("VLM response in %.1fs: %s", elapsed, raw_text)
-    return _parse_vision_response(raw_text), elapsed
+    parsed = _parse_vision_response(raw_text)
+    if parsed is None:
+        vlm_requests_total.labels(model=effective_model, status="parse_error").inc()
+        vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+        return None, elapsed, "parse_error"
+    vlm_requests_total.labels(model=effective_model, status="success").inc()
+    vlm_request_seconds.labels(model=effective_model).observe(elapsed)
+    return parsed, elapsed, "success"
 
 
 async def vision_identify_document(
@@ -548,6 +584,7 @@ async def vision_identify_document(
 ) -> Document | None:
     """Identify a document using VLM-based extraction."""
     LOGGER.info("Processing document %d with vision: '%s'", doc.id, doc.title)
+    _start = time.monotonic()
 
     field_account_holder = await session.cached_custom_field(
         DefaultCustomField.ACCOUNT_HOLDER
@@ -561,7 +598,7 @@ async def vision_identify_document(
 
     content = await session.retrieve_document(doc.id, original=True)
 
-    result, _elapsed = await extract_with_vision(
+    result, _elapsed, vlm_status = await extract_with_vision(
         pdf_bytes=content,
         config=session.config,
     )
@@ -569,6 +606,16 @@ async def vision_identify_document(
     if result is None:
         LOGGER.warning(
             "Vision extraction returned no result for '%s' (%d)", doc.title, doc.id
+        )
+        # Distinguish "found nothing" (VLM ran OK) from communication failures.
+        doc_status = (
+            "not_found"
+            if vlm_status in ("success", "parse_error", "no_pages")
+            else "error"
+        )
+        documents_identified_total.labels(method="vision", status=doc_status).inc()
+        document_identification_seconds.labels(method="vision").observe(
+            time.monotonic() - _start
         )
         return None
 
@@ -648,6 +695,11 @@ async def vision_identify_document(
         vision_tag = await session.lookup_tag(vision_tag_name)
         if vision_tag.id not in doc.tags:
             doc.tags.append(vision_tag.id)
+
+    documents_identified_total.labels(method="vision", status="success").inc()
+    document_identification_seconds.labels(method="vision").observe(
+        time.monotonic() - _start
+    )
 
     return doc
 
