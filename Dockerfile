@@ -5,6 +5,10 @@
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Set a working directory
 WORKDIR /app
@@ -12,15 +16,11 @@ WORKDIR /app
 # Copy package files
 COPY . /app/
 
-# Install pip and build essentials for any optional compilation
+# Install dependencies using uv from the lockfile
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git \
-    && pip install --upgrade pip setuptools wheel \
-    # Install pdfrename from the GitHub repo (main branch). This keeps the image
-    # self-contained even if the user doesn't provide the pdfrename package.
-    && pip install "git+https://github.com/Flameeyes/pdfrename.git@main" \
-    && pip install -e . \
-    && apt-get remove -y build-essential git \
+    && apt-get install -y --no-install-recommends git \
+    && uv sync --frozen --no-dev \
+    && apt-get remove -y git \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
