@@ -42,7 +42,6 @@ class Config:
     username: str
     password: str
 
-    object_owner: str
     all_access_group: str
 
     scan_software: Sequence[str] = ()

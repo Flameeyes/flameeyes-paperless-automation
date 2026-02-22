@@ -81,7 +81,7 @@ async def ensure_setup(ctx: click.Context) -> None:
             ) from e
 
         # Now we make sure that all the existing tags, correspondent, and document types
-        # are owned by the default owner with the corresponding default access group.
+        # have no owner, with the default access group having change permissions.
         async for tag in s.tags(full_permissions=True):
             changed = False
             assert tag.actual_permissions is not None
