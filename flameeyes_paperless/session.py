@@ -449,3 +449,50 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         document_json = document.to_json()
 
         return await self._patch(f"/api/documents/{document.id}/", json=document_json)
+
+    async def documents_by_correspondent(
+        self, correspondent_id: int
+    ) -> AsyncGenerator[Document, None]:
+        async for doc in self._get_objects(
+            ObjectType.DOCUMENT,
+            correspondent__id=str(correspondent_id),
+            order_fields="id",
+        ):
+            yield doc
+
+    async def documents_by_tag_id(self, tag_id: int) -> AsyncGenerator[Document, None]:
+        async for doc in self._get_objects(
+            ObjectType.DOCUMENT,
+            tags__id__in=str(tag_id),
+            order_fields="id",
+        ):
+            yield doc
+
+    async def documents_by_document_type(
+        self, document_type_id: int
+    ) -> AsyncGenerator[Document, None]:
+        async for doc in self._get_objects(
+            ObjectType.DOCUMENT,
+            document_type__id=str(document_type_id),
+            order_fields="id",
+        ):
+            yield doc
+
+    async def _delete(self, path: str) -> None:
+        if not (s := self._http_session):
+            raise RuntimeError("Session not opened!")
+        resp = await s.delete(self._normalize_path(path))
+        resp.raise_for_status()
+
+    async def lookup_tag_by_id(self, tag_id: int) -> Tag:
+        resp_json = await self._get(f"/api/tags/{tag_id}/", {})
+        return Tag(**self._filter_fields(Tag, resp_json))
+
+    async def delete_correspondent(self, correspondent_id: int) -> None:
+        await self._delete(f"/api/correspondents/{correspondent_id}/")
+
+    async def delete_tag(self, tag_id: int) -> None:
+        await self._delete(f"/api/tags/{tag_id}/")
+
+    async def delete_document_type(self, document_type_id: int) -> None:
+        await self._delete(f"/api/document_types/{document_type_id}/")

@@ -631,3 +631,163 @@ async def vision_benchmark(
             avg_time = sum(times) / len(times) if times else 0
             accuracy = f"{matched}/{total} ({pct:.0f}%)"
             click.echo(f"  {model_name:<25} | {accuracy:>15} | {avg_time:>8.0f}s")
+
+
+@main.command("merge-correspondents")
+@click.pass_context
+@click.option(
+    "--into",
+    "destination_id",
+    type=int,
+    required=True,
+    help="ID of the correspondent to merge into.",
+)
+@click.argument("source_ids", type=int, nargs=-1, required=True)
+@coro
+async def merge_correspondents(
+    ctx: click.Context, *, destination_id: int, source_ids: Sequence[int]
+) -> None:
+    """Merge one or more correspondents into a destination correspondent.
+
+    Reassigns all documents from each SOURCE_ID correspondent to the --into
+    correspondent, then deletes the now-empty source correspondents.
+    """
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    async with PaperlessSession(cfg) as s:
+        destination = await s.lookup_correspondent_by_id(destination_id)
+        click.echo(f"Destination: [{destination.id}] {destination.name}")
+
+        for source_id in source_ids:
+            source = await s.lookup_correspondent_by_id(source_id)
+            click.echo(f"Merging [{source.id}] {source.name} → {destination.name}")
+
+            count = 0
+            async for doc in s.documents_by_correspondent(source_id):
+                doc.correspondent = destination_id
+                count += 1
+                if execute:
+                    await s.update_document(doc)
+                    LOGGER.info(
+                        "Document %d reassigned to %s", doc.id, destination.name
+                    )
+                else:
+                    LOGGER.info(
+                        "Would reassign document %d to %s", doc.id, destination.name
+                    )
+
+            click.echo(f"  {count} document(s) reassigned.")
+
+            if execute:
+                await s.delete_correspondent(source_id)
+                click.echo(f"  Deleted correspondent [{source_id}] {source.name}.")
+            else:
+                click.echo(f"  Would delete correspondent [{source_id}] {source.name}.")
+
+
+@main.command("merge-tags")
+@click.pass_context
+@click.option(
+    "--into",
+    "destination_id",
+    type=int,
+    required=True,
+    help="ID of the tag to merge into.",
+)
+@click.argument("source_ids", type=int, nargs=-1, required=True)
+@coro
+async def merge_tags(
+    ctx: click.Context, *, destination_id: int, source_ids: Sequence[int]
+) -> None:
+    """Merge one or more tags into a destination tag.
+
+    Reassigns all documents from each SOURCE_ID tag to the --into tag (adding
+    the destination tag and removing the source tag), then deletes the
+    now-empty source tags.
+    """
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    async with PaperlessSession(cfg) as s:
+        destination = await s.lookup_tag_by_id(destination_id)
+        click.echo(f"Destination: [{destination.id}] {destination.name}")
+
+        for source_id in source_ids:
+            source = await s.lookup_tag_by_id(source_id)
+            click.echo(f"Merging [{source.id}] {source.name} → {destination.name}")
+
+            count = 0
+            async for doc in s.documents_by_tag_id(source_id):
+                doc.tags = [t for t in doc.tags if t != source_id]
+                if destination_id not in doc.tags:
+                    doc.tags.append(destination_id)
+                count += 1
+                if execute:
+                    await s.update_document(doc)
+                    LOGGER.info("Document %d retagged to %s", doc.id, destination.name)
+                else:
+                    LOGGER.info(
+                        "Would retag document %d to %s", doc.id, destination.name
+                    )
+
+            click.echo(f"  {count} document(s) retagged.")
+
+            if execute:
+                await s.delete_tag(source_id)
+                click.echo(f"  Deleted tag [{source_id}] {source.name}.")
+            else:
+                click.echo(f"  Would delete tag [{source_id}] {source.name}.")
+
+
+@main.command("merge-document-types")
+@click.pass_context
+@click.option(
+    "--into",
+    "destination_id",
+    type=int,
+    required=True,
+    help="ID of the document type to merge into.",
+)
+@click.argument("source_ids", type=int, nargs=-1, required=True)
+@coro
+async def merge_document_types(
+    ctx: click.Context, *, destination_id: int, source_ids: Sequence[int]
+) -> None:
+    """Merge one or more document types into a destination document type.
+
+    Reassigns all documents from each SOURCE_ID document type to the --into
+    document type, then deletes the now-empty source document types.
+    """
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    async with PaperlessSession(cfg) as s:
+        destination = await s.lookup_document_type_by_id(destination_id)
+        click.echo(f"Destination: [{destination.id}] {destination.name}")
+
+        for source_id in source_ids:
+            source = await s.lookup_document_type_by_id(source_id)
+            click.echo(f"Merging [{source.id}] {source.name} → {destination.name}")
+
+            count = 0
+            async for doc in s.documents_by_document_type(source_id):
+                doc.document_type = destination_id
+                count += 1
+                if execute:
+                    await s.update_document(doc)
+                    LOGGER.info(
+                        "Document %d reclassified to %s", doc.id, destination.name
+                    )
+                else:
+                    LOGGER.info(
+                        "Would reclassify document %d to %s", doc.id, destination.name
+                    )
+
+            click.echo(f"  {count} document(s) reclassified.")
+
+            if execute:
+                await s.delete_document_type(source_id)
+                click.echo(f"  Deleted document type [{source_id}] {source.name}.")
+            else:
+                click.echo(f"  Would delete document type [{source_id}] {source.name}.")
