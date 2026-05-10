@@ -146,6 +146,30 @@ _RESPONSE_SCHEMA: dict[str, object] = {
     ],
 }
 
+_CORRESPONDENT_MATCH_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "correspondent": {"type": ["string", "null"]},
+    },
+    "required": ["correspondent"],
+}
+
+_CORRESPONDENT_REFINE_PROMPT = """\
+A document's correspondent was identified as: "{extracted}"
+
+Existing correspondents already in the system:
+{existing_list}
+
+If one of the existing correspondents above refers to the same organization or \
+person as "{extracted}" (even if the spelling, abbreviation, or formatting \
+differs), return that correspondent's exact name from the list.
+
+If none is a reasonable match, return null.
+
+Return ONLY a valid JSON object with a single key: {{"correspondent": "exact name \
+from list, or null"}}
+"""
+
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class VisionComponents:
@@ -393,6 +417,76 @@ async def document_to_vision_components(
     )
 
 
+async def _refine_correspondent(
+    *,
+    extracted: str,
+    existing_names: list[str],
+    config: Config,
+) -> str | None:
+    """Text-only LLM pass to match an extracted correspondent against existing ones.
+
+    Returns the exact name of the best-matching existing correspondent, or None
+    if no match is found.
+    """
+    if not existing_names:
+        return None
+
+    effective_model = config.vision_model
+    client = ollama.AsyncClient(
+        host=config.vision_ollama_url,
+        timeout=httpx.Timeout(connect=30.0, read=120.0, write=None, pool=None),
+    )
+
+    existing_list = "\n".join(f"- {name}" for name in sorted(existing_names))
+    prompt = _CORRESPONDENT_REFINE_PROMPT.format(
+        extracted=extracted,
+        existing_list=existing_list,
+    )
+
+    use_format = "qwen3" not in effective_model.lower()
+
+    try:
+        response = await client.chat(
+            model=effective_model,
+            messages=[ollama.Message(role="user", content=prompt)],
+            format=_CORRESPONDENT_MATCH_SCHEMA if use_format else None,
+            options=ollama.Options(temperature=0.0, num_ctx=4096),
+        )
+    except Exception as e:
+        LOGGER.warning("Correspondent refinement LLM call failed: %s", e)
+        return None
+
+    raw_text = (response.message.content or "").strip()
+    raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    LOGGER.debug("Correspondent refinement response for '%s': %s", extracted, raw_text)
+
+    try:
+        data = json.loads(raw_text)
+        matched = data.get("correspondent")
+    except (json.JSONDecodeError, AttributeError):
+        LOGGER.warning(
+            "Could not parse correspondent refinement response: %s", raw_text
+        )
+        return None
+
+    if not matched:
+        LOGGER.info("No existing correspondent matched '%s'", extracted)
+        return None
+
+    matched_lower = matched.lower()
+    for name in existing_names:
+        if name.lower() == matched_lower:
+            if name != extracted:
+                LOGGER.info("Refined correspondent '%s' → '%s'", extracted, name)
+            return name
+
+    LOGGER.warning(
+        "Refinement returned '%s' which is not in the existing list; ignoring",
+        matched,
+    )
+    return None
+
+
 async def extract_with_vision(
     *,
     pdf_bytes: bytes,
@@ -632,6 +726,18 @@ async def vision_identify_document(
             result,
             correspondent=session.config.lookup_correspondent(result.correspondent),
         )
+
+    if result.correspondent:
+        # Second pass: match against existing Paperless correspondents to avoid
+        # creating duplicates when the VLM uses a slightly different name.
+        existing_names = [c.name async for c in session.correspondents()]
+        refined = await _refine_correspondent(
+            extracted=result.correspondent,
+            existing_names=existing_names,
+            config=session.config,
+        )
+        if refined is not None:
+            result = dataclasses.replace(result, correspondent=refined)
 
     if result.document_type:
         result = dataclasses.replace(
