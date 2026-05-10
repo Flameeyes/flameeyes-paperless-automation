@@ -456,33 +456,35 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         resp_json = await self._get("/api/documents/", params)
         return len(resp_json.get("all", []))
 
+    async def _document_ids_for_filter(self, **filters: str) -> list[int]:
+        """Return all document IDs matching the given filters in a single request.
+
+        Uses the 'all' response field so the full ID list is captured before any
+        mutations, avoiding pagination skew when documents are modified mid-iteration.
+        """
+        params = {"fields": "id", "page_size": "1", **filters}
+        resp_json = await self._get("/api/documents/", params)
+        return sorted(resp_json.get("all", []))
+
     async def documents_by_correspondent(
         self, correspondent_id: int
     ) -> AsyncGenerator[Document, None]:
-        async for doc in self._get_objects(
-            ObjectType.DOCUMENT,
-            correspondent__id=str(correspondent_id),
-            order_fields="id",
+        for doc_id in await self._document_ids_for_filter(
+            correspondent__id=str(correspondent_id)
         ):
-            yield doc
+            yield await self.lookup_document(doc_id)
 
     async def documents_by_tag_id(self, tag_id: int) -> AsyncGenerator[Document, None]:
-        async for doc in self._get_objects(
-            ObjectType.DOCUMENT,
-            tags__id__in=str(tag_id),
-            order_fields="id",
-        ):
-            yield doc
+        for doc_id in await self._document_ids_for_filter(tags__id__in=str(tag_id)):
+            yield await self.lookup_document(doc_id)
 
     async def documents_by_document_type(
         self, document_type_id: int
     ) -> AsyncGenerator[Document, None]:
-        async for doc in self._get_objects(
-            ObjectType.DOCUMENT,
-            document_type__id=str(document_type_id),
-            order_fields="id",
+        for doc_id in await self._document_ids_for_filter(
+            document_type__id=str(document_type_id)
         ):
-            yield doc
+            yield await self.lookup_document(doc_id)
 
     async def _delete(self, path: str) -> None:
         if not (s := self._http_session):
