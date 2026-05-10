@@ -171,6 +171,103 @@ from list, or null"}}
 """
 
 
+_CLUSTER_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "clusters": {
+            "type": "array",
+            "items": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+            },
+        }
+    },
+    "required": ["clusters"],
+}
+
+_CLUSTER_PROMPT = """\
+You are analyzing {entity_type} names from a document management system to \
+find potential duplicates.
+
+Names to analyze:
+{names_list}
+
+Find groups of 2 or more names that likely refer to the same entity. \
+Duplicates may arise from:
+- Spelling errors or typos
+- Abbreviations versus full names
+- Minor punctuation or formatting differences
+- Language variants of the same organization name
+
+Return ONLY groups of 2 or more similar names. Do not include any name that \
+has no near-duplicate in the list.
+
+Return a JSON object:
+{{"clusters": [["name_a1", "name_a2"], ["name_b1", "name_b2", "name_b3"], ...]}}
+
+If no duplicates are found, return: {{"clusters": []}}
+"""
+
+
+async def cluster_with_llm(
+    names: list[str],
+    entity_type: str,
+    config: Config,
+) -> list[list[str]]:
+    """Use text-only LLM to cluster potentially duplicate entity names.
+
+    Returns a list of clusters; each cluster has 2+ names that likely refer
+    to the same entity. Names with no near-duplicate are not included.
+    """
+    if len(names) < 2:
+        return []
+
+    effective_model = config.vision_model
+    client = ollama.AsyncClient(
+        host=config.vision_ollama_url,
+        timeout=httpx.Timeout(connect=30.0, read=120.0, write=None, pool=None),
+    )
+
+    names_list = "\n".join(f"- {name}" for name in sorted(names))
+    prompt = _CLUSTER_PROMPT.format(entity_type=entity_type, names_list=names_list)
+
+    use_format = "qwen3" not in effective_model.lower()
+
+    try:
+        response = await client.chat(
+            model=effective_model,
+            messages=[ollama.Message(role="user", content=prompt)],
+            format=_CLUSTER_SCHEMA if use_format else None,
+            options=ollama.Options(temperature=0.0, num_ctx=8192),
+        )
+    except Exception as e:
+        LOGGER.warning("Entity clustering LLM call failed: %s", e)
+        return []
+
+    raw_text = (response.message.content or "").strip()
+    raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    LOGGER.debug("Cluster response for %s: %s", entity_type, raw_text)
+
+    try:
+        data = json.loads(raw_text)
+        raw_clusters: list[object] = data.get("clusters", [])
+    except (json.JSONDecodeError, AttributeError):
+        LOGGER.warning("Failed to parse cluster response: %s", raw_text)
+        return []
+
+    names_set = set(names)
+    valid: list[list[str]] = []
+    for cluster in raw_clusters:
+        if not isinstance(cluster, list):
+            continue
+        members = [n for n in cluster if isinstance(n, str) and n in names_set]
+        if len(members) >= 2:
+            valid.append(members)
+
+    return valid
+
+
 @dataclasses.dataclass(slots=True, kw_only=True)
 class VisionComponents:
     correspondent: str | None = None

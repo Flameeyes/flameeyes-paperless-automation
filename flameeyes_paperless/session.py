@@ -450,6 +450,12 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
 
         return await self._patch(f"/api/documents/{document.id}/", json=document_json)
 
+    async def count_documents(self, **filters: str) -> int:
+        """Count documents matching the given API filter parameters."""
+        params = {"fields": "id", "page_size": "1", **filters}
+        resp_json = await self._get("/api/documents/", params)
+        return len(resp_json.get("all", []))
+
     async def documents_by_correspondent(
         self, correspondent_id: int
     ) -> AsyncGenerator[Document, None]:

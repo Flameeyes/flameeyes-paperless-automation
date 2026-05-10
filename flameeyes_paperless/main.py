@@ -8,6 +8,7 @@ import re
 from collections.abc import Sequence
 from functools import wraps
 from pathlib import Path
+from typing import Any
 
 import click
 import click_log
@@ -24,6 +25,7 @@ from .utils import (
 )
 from .vision import (
     FieldResult,
+    cluster_with_llm,
     compare_results,
     document_to_vision_components,
     export_training_example,
@@ -791,3 +793,233 @@ async def merge_document_types(
                 click.echo(f"  Deleted document type [{source_id}] {source.name}.")
             else:
                 click.echo(f"  Would delete document type [{source_id}] {source.name}.")
+
+
+async def _count_entity_docs(
+    session: PaperlessSession,
+    entity_type: str,
+    entity_id: int,
+    identified_tag_id: int | None,
+    vision_tag_id: int | None,
+) -> tuple[int, int, int]:
+    """Return (deterministic_count, vision_count, total_count) for an entity."""
+    if entity_type in ("correspondent", "document_type"):
+        base: dict[str, str] = {f"{entity_type}__id": str(entity_id)}
+        total = await session.count_documents(**base)
+        det = (
+            await session.count_documents(**base, tags__id__in=str(identified_tag_id))
+            if identified_tag_id is not None
+            else 0
+        )
+        vis = (
+            await session.count_documents(**base, tags__id__in=str(vision_tag_id))
+            if vision_tag_id is not None
+            else 0
+        )
+    else:  # tag: must AND with the identification tags using tags__id__all
+        total = await session.count_documents(tags__id__in=str(entity_id))
+        det = (
+            await session.count_documents(
+                tags__id__all=f"{entity_id},{identified_tag_id}"
+            )
+            if identified_tag_id is not None
+            else 0
+        )
+        vis = (
+            await session.count_documents(tags__id__all=f"{entity_id},{vision_tag_id}")
+            if vision_tag_id is not None
+            else 0
+        )
+    return det, vis, total
+
+
+async def _process_duplicate_cluster(
+    *,
+    session: PaperlessSession,
+    entity_type: str,
+    cluster: list[Any],
+    identified_tag_id: int | None,
+    vision_tag_id: int | None,
+    execute: bool,
+) -> None:
+    """Score, display, and interactively merge one cluster of duplicate entities."""
+    scored: list[tuple[Any, int, int, int]] = []
+    for entity in cluster:
+        det, vis, total = await _count_entity_docs(
+            session, entity_type, entity.id, identified_tag_id, vision_tag_id
+        )
+        scored.append((entity, det, vis, total))
+
+    # Most deterministic docs → canonical; break ties by total docs then lower ID (older)
+    scored.sort(key=lambda x: (-x[1], -x[3], x[0].id))
+    canonical, canonical_det, canonical_vis, canonical_total = scored[0]
+
+    type_label = entity_type.replace("_", " ")
+    click.echo(f"\nPotential duplicate {type_label}s:")
+    for entity, det, vis, total in scored:
+        marker = " [canonical]" if entity is canonical else ""
+        click.echo(
+            f"  • {entity.name} — {total} doc(s)"
+            f" ({det} deterministic, {vis} vision){marker}"
+        )
+
+    for dupe, det, vis, total in scored[1:]:
+        if not click.confirm(f"Merge '{dupe.name}' into '{canonical.name}'?"):
+            continue
+
+        count = 0
+        if entity_type == "correspondent":
+            async for doc in session.documents_by_correspondent(dupe.id):
+                doc.correspondent = canonical.id
+                count += 1
+                if execute:
+                    await session.update_document(doc)
+        elif entity_type == "tag":
+            async for doc in session.documents_by_tag_id(dupe.id):
+                doc.tags = [t for t in doc.tags if t != dupe.id]
+                if canonical.id not in doc.tags:
+                    doc.tags.append(canonical.id)
+                count += 1
+                if execute:
+                    await session.update_document(doc)
+        elif entity_type == "document_type":
+            async for doc in session.documents_by_document_type(dupe.id):
+                doc.document_type = canonical.id
+                count += 1
+                if execute:
+                    await session.update_document(doc)
+
+        click.echo(f"  {'Merged' if execute else 'Would merge'} {count} document(s).")
+
+        if execute:
+            if entity_type == "correspondent":
+                await session.delete_correspondent(dupe.id)
+            elif entity_type == "tag":
+                await session.delete_tag(dupe.id)
+            elif entity_type == "document_type":
+                await session.delete_document_type(dupe.id)
+            click.echo(f"  Deleted '{dupe.name}'.")
+        else:
+            click.echo(f"  Would delete '{dupe.name}' (use --execute to apply).")
+
+
+@main.command("find-duplicates")
+@click.pass_context
+@click.option(
+    "--correspondents/--no-correspondents",
+    default=True,
+    help="Cluster correspondents for duplicates.",
+)
+@click.option(
+    "--tags/--no-tags",
+    default=True,
+    help="Cluster tags for duplicates.",
+)
+@click.option(
+    "--document-types/--no-document-types",
+    "document_types",
+    default=True,
+    help="Cluster document types for duplicates.",
+)
+@coro
+async def find_duplicates(
+    ctx: click.Context,
+    *,
+    correspondents: bool,
+    tags: bool,
+    document_types: bool,
+) -> None:
+    """Find and interactively merge potential duplicate entities.
+
+    Uses an LLM to cluster correspondents, tags, and document types by
+    semantic similarity. Within each cluster, entities whose documents were
+    mostly identified deterministically (by the PDF renamer) are treated as
+    canonical; those identified only by the VLM are offered as merge sources.
+    """
+    execute = ctx.obj.execute
+    cfg = Config.from_file()
+
+    async with PaperlessSession(cfg) as s:
+        # Resolve identification tag IDs; collect all predefined tag IDs to
+        # exclude them from the tag clustering (they're system tags, not user data).
+        identified_tag_id: int | None = None
+        vision_tag_id: int | None = None
+        predefined_tag_ids: set[int] = set()
+
+        for key, tag_name in cfg.predefined_tags.items():
+            assert isinstance(tag_name, str)
+            try:
+                tag = await s.lookup_tag(tag_name)
+                predefined_tag_ids.add(tag.id)
+                if key == "identified":
+                    identified_tag_id = tag.id
+                elif key == "vision_identified":
+                    vision_tag_id = tag.id
+            except ObjectNotFound:
+                pass
+
+        if correspondents:
+            all_corr = [c async for c in s.correspondents()]
+            click.echo(f"Clustering {len(all_corr)} correspondents with LLM...")
+            clusters = await cluster_with_llm(
+                [c.name for c in all_corr], "correspondent", cfg
+            )
+            LOGGER.info("Found %d correspondent cluster(s).", len(clusters))
+            if not clusters:
+                click.echo("  No duplicate correspondents found.")
+            for cluster_names in clusters:
+                cluster_set = set(cluster_names)
+                entities = [c for c in all_corr if c.name in cluster_set]
+                if len(entities) >= 2:
+                    await _process_duplicate_cluster(
+                        session=s,
+                        entity_type="correspondent",
+                        cluster=entities,
+                        identified_tag_id=identified_tag_id,
+                        vision_tag_id=vision_tag_id,
+                        execute=execute,
+                    )
+
+        if document_types:
+            all_dt = [dt async for dt in s.document_types()]
+            click.echo(f"Clustering {len(all_dt)} document types with LLM...")
+            clusters = await cluster_with_llm(
+                [dt.name for dt in all_dt], "document type", cfg
+            )
+            LOGGER.info("Found %d document type cluster(s).", len(clusters))
+            if not clusters:
+                click.echo("  No duplicate document types found.")
+            for cluster_names in clusters:
+                cluster_set = set(cluster_names)
+                entities = [dt for dt in all_dt if dt.name in cluster_set]
+                if len(entities) >= 2:
+                    await _process_duplicate_cluster(
+                        session=s,
+                        entity_type="document_type",
+                        cluster=entities,
+                        identified_tag_id=identified_tag_id,
+                        vision_tag_id=vision_tag_id,
+                        execute=execute,
+                    )
+
+        if tags:
+            all_tags = [t async for t in s.tags() if t.id not in predefined_tag_ids]
+            click.echo(f"Clustering {len(all_tags)} tags with LLM...")
+            clusters = await cluster_with_llm([t.name for t in all_tags], "tag", cfg)
+            LOGGER.info("Found %d tag cluster(s).", len(clusters))
+            if not clusters:
+                click.echo("  No duplicate tags found.")
+            for cluster_names in clusters:
+                cluster_set = set(cluster_names)
+                entities = [t for t in all_tags if t.name in cluster_set]
+                if len(entities) >= 2:
+                    await _process_duplicate_cluster(
+                        session=s,
+                        entity_type="tag",
+                        cluster=entities,
+                        identified_tag_id=identified_tag_id,
+                        vision_tag_id=vision_tag_id,
+                        execute=execute,
+                    )
+
+        click.echo("\nDone.")
