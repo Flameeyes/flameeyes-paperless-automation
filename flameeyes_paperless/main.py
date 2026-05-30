@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import re
 from collections.abc import Sequence
+from datetime import date
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -169,31 +170,150 @@ async def ensure_setup(ctx: click.Context) -> None:
 @click.argument(
     "documents",
     type=str,
-    required=True,
+    required=False,
     nargs=-1,
 )
+@click.option(
+    "--correspondent", type=str, default=None, help="Filter by correspondent name."
+)
+@click.option(
+    "--document-type", type=str, default=None, help="Filter by document type name."
+)
+@click.option(
+    "--tag",
+    "tags",
+    type=str,
+    multiple=True,
+    help="Filter to documents with this tag (repeatable; all must match).",
+)
+@click.option(
+    "--exclude-tag",
+    "exclude_tags",
+    type=str,
+    multiple=True,
+    help="Exclude documents with this tag (repeatable; any match excludes).",
+)
+@click.option(
+    "--added-after",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents added on or after DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--added-before",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents added on or before DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--created-after",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents created on or after DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--created-before",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents created on or before DATE (YYYY-MM-DD).",
+)
 @coro
-async def identify(ctx, *, documents: Sequence[str]) -> None:
+async def identify(
+    ctx,
+    *,
+    documents: Sequence[str],
+    correspondent: str | None,
+    document_type: str | None,
+    tags: Sequence[str],
+    exclude_tags: Sequence[str],
+    added_after,
+    added_before,
+    created_after,
+    created_before,
+) -> None:
+    filter_opts = (
+        correspondent,
+        document_type,
+        tags,
+        exclude_tags,
+        added_after,
+        added_before,
+        created_after,
+        created_before,
+    )
+    has_filters = any(v is not None and v != () for v in filter_opts)
+
+    if documents and has_filters:
+        raise click.UsageError(
+            "Provide either document IDs/URLs or filter options, not both."
+        )
+    if not documents and not has_filters:
+        raise click.UsageError(
+            "Provide at least one document ID/URL or one filter option."
+        )
+
     execute = ctx.obj.execute
     load_all_renamers()
     cfg = Config.from_file()
 
-    doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
-
     async with PaperlessSession(cfg) as s:
-        for doc_ref in documents:
-            try:
-                document_id = int(doc_ref)
-            except ValueError:
-                if not (m := doc_url_pattern.fullmatch(doc_ref)):
-                    raise click.UsageError(f"Argument '{doc_ref}' is not recognized!")
+        if documents:
+            doc_url_pattern = re.compile(
+                rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?",
+            )
+            for doc_ref in documents:
+                try:
+                    document_id = int(doc_ref)
+                except ValueError:
+                    if not (m := doc_url_pattern.fullmatch(doc_ref)):
+                        raise click.UsageError(
+                            f"Argument '{doc_ref}' is not recognized!"
+                        )
+                    document_id = int(m.group("document_id"))
 
-                document_id = int(m.group("document_id"))
+                doc = await s.lookup_document(document_id)
+                LOGGER.info(f"Found document: {doc.title}")
+                await identify_document(execute=execute, session=s, doc=doc)
+        else:
+            correspondent_id = None
+            if correspondent is not None:
+                correspondent_id = (await s.lookup_correspondent(correspondent)).id
 
-            doc = await s.lookup_document(document_id)
-            LOGGER.info(f"Found document: {doc.title}")
+            document_type_id = None
+            if document_type is not None:
+                document_type_id = (await s.lookup_document_type(document_type)).id
 
-            await identify_document(execute=execute, session=s, doc=doc)
+            tag_ids = [(await s.lookup_tag(name)).id for name in tags] if tags else None
+
+            excluded_tag_ids = (
+                [(await s.lookup_tag(name)).id for name in exclude_tags]
+                if exclude_tags
+                else None
+            )
+
+            doc_ids = await s.document_ids_by_filters(
+                correspondent_id=correspondent_id,
+                document_type_id=document_type_id,
+                tag_ids=tag_ids,
+                excluded_tag_ids=excluded_tag_ids,
+                added_after=date.fromisoformat(added_after.strftime("%Y-%m-%d"))
+                if added_after
+                else None,
+                added_before=date.fromisoformat(added_before.strftime("%Y-%m-%d"))
+                if added_before
+                else None,
+                created_after=date.fromisoformat(created_after.strftime("%Y-%m-%d"))
+                if created_after
+                else None,
+                created_before=date.fromisoformat(created_before.strftime("%Y-%m-%d"))
+                if created_before
+                else None,
+            )
+
+            for doc_id in doc_ids:
+                doc = await s.lookup_document(doc_id)
+                LOGGER.info(f"Found document: {doc.title}")
+                await identify_document(execute=execute, session=s, doc=doc)
 
 
 @main.command

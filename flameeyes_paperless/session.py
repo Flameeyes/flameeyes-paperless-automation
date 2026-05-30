@@ -4,6 +4,7 @@
 
 import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator, Collection, Iterator, Mapping
+from datetime import date
 from enum import StrEnum
 from functools import cached_property
 from typing import Any, Final, Self
@@ -465,6 +466,39 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         params = {"fields": "id", "page_size": "1", **filters}
         resp_json = await self._get("/api/documents/", params)
         return sorted(resp_json.get("all", []))
+
+    async def document_ids_by_filters(
+        self,
+        *,
+        correspondent_id: int | None = None,
+        document_type_id: int | None = None,
+        tag_ids: Collection[int] | None = None,
+        excluded_tag_ids: Collection[int] | None = None,
+        added_after: date | None = None,
+        added_before: date | None = None,
+        created_after: date | None = None,
+        created_before: date | None = None,
+    ) -> list[int]:
+        filters: dict[str, str] = {}
+        if correspondent_id is not None:
+            filters["correspondent__id"] = str(correspondent_id)
+        if document_type_id is not None:
+            filters["document_type__id"] = str(document_type_id)
+        if tag_ids:
+            filters["tags__id__all"] = ",".join(str(i) for i in sorted(tag_ids))
+        if excluded_tag_ids:
+            filters["tags__id__none"] = ",".join(
+                str(i) for i in sorted(excluded_tag_ids)
+            )
+        if added_after is not None:
+            filters["added__date__gte"] = added_after.isoformat()
+        if added_before is not None:
+            filters["added__date__lte"] = added_before.isoformat()
+        if created_after is not None:
+            filters["created__date__gte"] = created_after.isoformat()
+        if created_before is not None:
+            filters["created__date__lte"] = created_before.isoformat()
+        return await self._document_ids_for_filter(**filters)
 
     async def documents_by_correspondent(
         self, correspondent_id: int
