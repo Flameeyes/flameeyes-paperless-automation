@@ -483,8 +483,11 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         added_before: date | None = None,
         created_after: date | None = None,
         created_before: date | None = None,
+        mime_type: str | None = "application/pdf",
     ) -> list[int]:
         filters: dict[str, str] = {}
+        if mime_type is not None:
+            filters["mime_type"] = mime_type
         if correspondent_id is not None:
             filters["correspondent__id"] = str(correspondent_id)
         if document_type_id is not None:
