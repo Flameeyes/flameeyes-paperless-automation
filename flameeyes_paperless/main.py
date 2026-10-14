@@ -391,7 +391,7 @@ async def identify_all(
             "Unable to use --only-inbox if no inbox tag is configured."
         )
 
-    if exclude_identified and "identified" not in cfg.predefined_tags is None:
+    if exclude_identified and "identified" not in cfg.predefined_tags:
         LOGGER.warning("No identified tag present, will not exclude any document.")
 
     checkpoint_file = Path("./paperless-automation-checkpoint")
@@ -409,7 +409,7 @@ async def identify_all(
             inbox_tag = await s.lookup_tag(cfg.predefined_tags["inbox"])
             required_tags.append(inbox_tag)
 
-        if exclude_identified and "identified" not in cfg.predefined_tags:
+        if exclude_identified and "identified" in cfg.predefined_tags:
             identified_tag = await s.lookup_tag(cfg.predefined_tags["identified"])
             excluded_tags.append(identified_tag)
 
