@@ -217,6 +217,24 @@ async def ensure_setup(ctx: click.Context) -> None:
     default=None,
     help="Filter to documents created on or before DATE (YYYY-MM-DD).",
 )
+@click.option(
+    "--exclude-identified / --no-exclude-identified",
+    is_flag=True,
+    default=True,
+    help="Whether to exclude documents already tagged as identified.",
+)
+@click.option(
+    "--exclude-scanned / --no-exclude-scanned",
+    is_flag=True,
+    default=True,
+    help="Whether to exclude documents tagged as scanned.",
+)
+@click.option(
+    "--only-inbox / --no-only-inbox",
+    is_flag=True,
+    default=True,
+    help="Whether to only process documents tagged with the configured inbox tag.",
+)
 @coro
 async def identify(
     ctx,
@@ -230,7 +248,15 @@ async def identify(
     added_before,
     created_after,
     created_before,
+    exclude_identified: bool,
+    exclude_scanned: bool,
+    only_inbox: bool,
 ) -> None:
+    """Identify documents by ID/URL, or by searching with filters.
+
+    Without document IDs, documents are searched for, by default restricted
+    to the inbox and excluding documents already identified or scanned.
+    """
     filter_opts = (
         correspondent,
         document_type,
@@ -243,18 +269,27 @@ async def identify(
     )
     has_filters = any(v is not None and v != () for v in filter_opts)
 
-    if documents and has_filters:
+    has_explicit_defaults = any(
+        ctx.get_parameter_source(name) != click.core.ParameterSource.DEFAULT
+        for name in ("exclude_identified", "exclude_scanned", "only_inbox")
+    )
+
+    if documents and (has_filters or has_explicit_defaults):
         raise click.UsageError(
             "Provide either document IDs/URLs or filter options, not both."
-        )
-    if not documents and not has_filters:
-        raise click.UsageError(
-            "Provide at least one document ID/URL or one filter option."
         )
 
     execute = ctx.obj.execute
     load_all_renamers()
     cfg = Config.from_file()
+
+    if not documents and only_inbox and "inbox" not in cfg.predefined_tags:
+        raise click.UsageError(
+            "Unable to use --only-inbox if no inbox tag is configured."
+        )
+
+    if not documents and exclude_identified and "identified" not in cfg.predefined_tags:
+        LOGGER.warning("No identified tag present, will not exclude any document.")
 
     async with PaperlessSession(cfg) as s:
         if documents:
@@ -283,13 +318,20 @@ async def identify(
             if document_type is not None:
                 document_type_id = (await s.lookup_document_type(document_type)).id
 
-            tag_ids = [(await s.lookup_tag(name)).id for name in tags] if tags else None
+            tag_names = list(tags)
+            excluded_tag_names = list(exclude_tags)
 
-            excluded_tag_ids = (
-                [(await s.lookup_tag(name)).id for name in exclude_tags]
-                if exclude_tags
-                else None
-            )
+            if only_inbox:
+                tag_names.append(cfg.predefined_tags["inbox"])
+            if exclude_identified and "identified" in cfg.predefined_tags:
+                excluded_tag_names.append(cfg.predefined_tags["identified"])
+            if exclude_scanned and "scanned" in cfg.predefined_tags:
+                excluded_tag_names.append(cfg.predefined_tags["scanned"])
+
+            tag_ids = {(await s.lookup_tag(name)).id for name in tag_names}
+            excluded_tag_ids = {
+                (await s.lookup_tag(name)).id for name in excluded_tag_names
+            }
 
             doc_ids = await s.document_ids_by_filters(
                 correspondent_id=correspondent_id,
