@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Collection, Iterator,
 from datetime import date
 from enum import StrEnum
 from functools import cached_property
-from typing import Any, Final, Self
+from typing import TYPE_CHECKING, Any, Final, Self
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -29,6 +29,9 @@ from .types import (
     UsersAndGroups,
 )
 
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
 
 class ObjectNotFound(LookupError):
     pass
@@ -45,7 +48,7 @@ class ObjectType(StrEnum):
     DOCUMENT = "documents"
 
 
-_TYPE_TO_STRUCTURE: Mapping[ObjectType, type] = {
+_TYPE_TO_STRUCTURE: Mapping[ObjectType, type["DataclassInstance"]] = {
     ObjectType.USER: User,
     ObjectType.GROUP: Group,
     ObjectType.TAG: Tag,
@@ -148,14 +151,16 @@ class PaperlessSession(contextlib.AbstractAsyncContextManager):
         return await resp.json()
 
     @staticmethod
-    def _filter_fields(cls: type, data: Mapping[str, Any]) -> dict[str, Any]:
+    def _filter_fields(
+        cls: type["DataclassInstance"], data: Mapping[str, Any]
+    ) -> dict[str, Any]:
         """Filter a JSON dict to only fields accepted by the given dataclass.
 
         Uses __dataclass_fields__ instead of dataclasses.fields() to also
         include InitVar fields, which are accepted by __init__ but not
         returned by dataclasses.fields().
         """
-        known = cls.__dataclass_fields__.keys()  # type: ignore[attr-defined]
+        known = cls.__dataclass_fields__.keys()
         return {k: v for k, v in data.items() if k in known}
 
     def _extract_objects(
