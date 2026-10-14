@@ -867,7 +867,7 @@ wheels = [
 [[package]]
 name = "pdfrenamer"
 version = "0.0.0"
-source = { git = "https://github.com/Flameeyes/pdfrename#7b6d622a2e0f1fafb860fa5447e48a55a4638b03" }
+source = { git = "https://github.com/Flameeyes/pdfrename#7ee66741012ff314e907be9aee2d09ba3b321c7f" }
 dependencies = [
     { name = "click" },
     { name = "click-log" },
