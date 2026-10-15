@@ -182,6 +182,53 @@ vlm_few_shot_examples
 
 ---
 
+### Ollama timing breakdown — Histograms
+
+Ollama reports its own timing breakdown in the final chunk of each
+response. These histograms record it for every VLM request that received
+a response (`success` or `parse_error`); only the attempt that produced
+the response is counted. All are labelled by `model`.
+
+| Metric | Unit | Meaning |
+|--------|------|---------|
+| `vlm_load_seconds` | seconds | Time loading the model into memory; near zero when already loaded |
+| `vlm_prompt_eval_seconds` | seconds | Time processing the prompt (prefill), including image encoding |
+| `vlm_eval_seconds` | seconds | Time generating the response tokens (decode) |
+| `vlm_prompt_tokens` | tokens | Prompt tokens actually evaluated; lower than the full prompt when Ollama reuses its KV cache for the shared few-shot prefix |
+| `vlm_eval_tokens` | tokens | Response tokens generated |
+
+Buckets (seconds): `0.1, 0.5, 1, 5, 10, 30, 60, 120, 300, 600, 900`
+
+Buckets (prompt tokens): `64, 256, 1024, 2048, 4096, 8192, 16384, 32768, 65536`
+
+Buckets (response tokens): `16, 32, 64, 128, 256, 512, 1024, 2048, 4096`
+
+**Useful queries**
+
+```promql
+# Where the time goes: average seconds per phase, per model
+sum by (model) (rate(vlm_load_seconds_sum[1h]))
+  / sum by (model) (rate(vlm_load_seconds_count[1h]))
+sum by (model) (rate(vlm_prompt_eval_seconds_sum[1h]))
+  / sum by (model) (rate(vlm_prompt_eval_seconds_count[1h]))
+sum by (model) (rate(vlm_eval_seconds_sum[1h]))
+  / sum by (model) (rate(vlm_eval_seconds_count[1h]))
+
+# Prompt processing throughput (tokens/s)
+sum by (model) (rate(vlm_prompt_tokens_sum[1h]))
+  / sum by (model) (rate(vlm_prompt_eval_seconds_sum[1h]))
+
+# Generation throughput (tokens/s)
+sum by (model) (rate(vlm_eval_tokens_sum[1h]))
+  / sum by (model) (rate(vlm_eval_seconds_sum[1h]))
+
+# Average prompt tokens evaluated — a drop means prefix caching is working
+sum by (model) (rate(vlm_prompt_tokens_sum[1h]))
+  / sum by (model) (rate(vlm_prompt_tokens_count[1h]))
+```
+
+---
+
 ## Suggested alerts
 
 | Alert | Condition | Severity |

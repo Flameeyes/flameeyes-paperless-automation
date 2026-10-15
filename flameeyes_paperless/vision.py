@@ -19,7 +19,12 @@ from .metrics import (
     document_identification_seconds,
     documents_identified_total,
     vlm_context_tokens,
+    vlm_eval_seconds,
+    vlm_eval_tokens,
     vlm_few_shot_examples,
+    vlm_load_seconds,
+    vlm_prompt_eval_seconds,
+    vlm_prompt_tokens,
     vlm_request_seconds,
     vlm_requests_total,
 )
@@ -276,6 +281,51 @@ class VisionComponents:
     account_holders: tuple[str, ...] = ()
     account_number: str | None = None
     document_number: str | None = None
+
+
+@dataclasses.dataclass(slots=True, kw_only=True)
+class VlmTimings:
+    """Ollama's timing breakdown for one VLM response, in seconds and tokens."""
+
+    total_seconds: float = 0.0
+    load_seconds: float = 0.0
+    prompt_eval_seconds: float = 0.0
+    eval_seconds: float = 0.0
+    prompt_tokens: int = 0
+    eval_tokens: int = 0
+
+    @classmethod
+    def from_response(cls, response: ollama.ChatResponse) -> "VlmTimings":
+        def seconds(nanoseconds: int | None) -> float:
+            return (nanoseconds or 0) / 1e9
+
+        return cls(
+            total_seconds=seconds(response.total_duration),
+            load_seconds=seconds(response.load_duration),
+            prompt_eval_seconds=seconds(response.prompt_eval_duration),
+            eval_seconds=seconds(response.eval_duration),
+            prompt_tokens=response.prompt_eval_count or 0,
+            eval_tokens=response.eval_count or 0,
+        )
+
+    def observe(self, model: str) -> None:
+        vlm_load_seconds.labels(model=model).observe(self.load_seconds)
+        vlm_prompt_eval_seconds.labels(model=model).observe(self.prompt_eval_seconds)
+        vlm_eval_seconds.labels(model=model).observe(self.eval_seconds)
+        vlm_prompt_tokens.labels(model=model).observe(self.prompt_tokens)
+        vlm_eval_tokens.labels(model=model).observe(self.eval_tokens)
+
+    def summary(self) -> str:
+        def rate(tokens: int, seconds: float) -> float:
+            return tokens / seconds if seconds else 0.0
+
+        return (
+            f"load {self.load_seconds:.1f}s, "
+            f"prompt {self.prompt_tokens} tok in {self.prompt_eval_seconds:.1f}s "
+            f"({rate(self.prompt_tokens, self.prompt_eval_seconds):.0f} tok/s), "
+            f"eval {self.eval_tokens} tok in {self.eval_seconds:.1f}s "
+            f"({rate(self.eval_tokens, self.eval_seconds):.1f} tok/s)"
+        )
 
 
 class FieldResult(enum.StrEnum):
@@ -589,12 +639,13 @@ async def extract_with_vision(
     pdf_bytes: bytes,
     config: Config,
     model: str | None = None,
-) -> tuple[VisionComponents | None, float, str]:
+) -> tuple[VisionComponents | None, float, str, VlmTimings | None]:
     """Call the Ollama VLM to extract document fields from PDF bytes.
 
-    Returns a tuple of (result, elapsed_seconds, status) where status is one of:
-    "success", "parse_error", "timeout", "connection_error", "http_error",
-    "model_unavailable", "no_pages".
+    Returns a tuple of (result, elapsed_seconds, status, timings) where status
+    is one of: "success", "parse_error", "timeout", "connection_error",
+    "http_error", "model_unavailable", "no_pages".  timings is Ollama's own
+    breakdown of the response, available only when a response was received.
     """
     effective_model = model or config.vision_model
     images = pdf_to_images(
@@ -604,7 +655,7 @@ async def extract_with_vision(
     if not images:
         LOGGER.warning("No pages rendered from PDF")
         vlm_requests_total.labels(model=effective_model, status="no_pages").inc()
-        return None, 0.0, "no_pages"
+        return None, 0.0, "no_pages", None
 
     few_shot = load_few_shot_examples(
         config.vision_examples_dir,
@@ -659,7 +710,7 @@ async def extract_with_vision(
         vlm_requests_total.labels(
             model=effective_model, status="model_unavailable"
         ).inc()
-        return None, 0.0, "model_unavailable"
+        return None, 0.0, "model_unavailable", None
 
     # Some models (e.g. qwen3-vl, thinking models) don't support Ollama's
     # grammar-constrained JSON output well.  Skip the format parameter for
@@ -701,9 +752,13 @@ async def extract_with_vision(
                 stream=True,
             )
             chunks: list[str] = []
+            timings: VlmTimings | None = None
             async for chunk in stream:
                 if chunk.message.content:
                     chunks.append(chunk.message.content)
+                if chunk.done:
+                    # Only the final chunk carries the timing breakdown.
+                    timings = VlmTimings.from_response(chunk)
             break  # Success
         except httpx.TimeoutException as e:
             elapsed = time.monotonic() - start_time
@@ -721,13 +776,13 @@ async def extract_with_vision(
             )
             vlm_requests_total.labels(model=effective_model, status="timeout").inc()
             vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-            return None, elapsed, "timeout"
+            return None, elapsed, "timeout", None
         except httpx.HTTPStatusError as e:
             elapsed = time.monotonic() - start_time
             LOGGER.error("Ollama HTTP error: %s", e)
             vlm_requests_total.labels(model=effective_model, status="http_error").inc()
             vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-            return None, elapsed, "http_error"
+            return None, elapsed, "http_error", None
         except httpx.TransportError as e:
             elapsed = time.monotonic() - start_time
             if attempt < max_attempts:
@@ -749,25 +804,28 @@ async def extract_with_vision(
                 model=effective_model, status="connection_error"
             ).inc()
             vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-            return None, elapsed, "connection_error"
+            return None, elapsed, "connection_error", None
         except ollama.ResponseError as e:
             elapsed = time.monotonic() - start_time
             LOGGER.error("Ollama request failed: %s", e)
             vlm_requests_total.labels(model=effective_model, status="http_error").inc()
             vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-            return None, elapsed, "http_error"
+            return None, elapsed, "http_error", None
 
     elapsed = time.monotonic() - start_time
     raw_text = "".join(chunks)
     LOGGER.debug("VLM response in %.1fs: %s", elapsed, raw_text)
+    if timings is not None:
+        LOGGER.info("VLM timings for %s: %s", effective_model, timings.summary())
+        timings.observe(effective_model)
     parsed = _parse_vision_response(raw_text)
     if parsed is None:
         vlm_requests_total.labels(model=effective_model, status="parse_error").inc()
         vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-        return None, elapsed, "parse_error"
+        return None, elapsed, "parse_error", timings
     vlm_requests_total.labels(model=effective_model, status="success").inc()
     vlm_request_seconds.labels(model=effective_model).observe(elapsed)
-    return parsed, elapsed, "success"
+    return parsed, elapsed, "success", timings
 
 
 async def vision_identify_document(
@@ -789,7 +847,7 @@ async def vision_identify_document(
 
     content = await session.retrieve_document(doc.id, original=True)
 
-    result, _elapsed, vlm_status = await extract_with_vision(
+    result, _elapsed, vlm_status, _timings = await extract_with_vision(
         pdf_bytes=content,
         config=session.config,
     )

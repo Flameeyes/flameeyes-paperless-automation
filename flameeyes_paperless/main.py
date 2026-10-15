@@ -26,6 +26,7 @@ from .utils import (
 )
 from .vision import (
     FieldResult,
+    VlmTimings,
     cluster_with_llm,
     compare_results,
     document_to_vision_components,
@@ -700,6 +701,7 @@ async def vision_benchmark(
     model_totals: dict[str, int] = {m: 0 for m in effective_models}
     model_matches: dict[str, int] = {m: 0 for m in effective_models}
     model_times: dict[str, list[float]] = {m: [] for m in effective_models}
+    model_timings: dict[str, list[VlmTimings]] = {m: [] for m in effective_models}
 
     async with PaperlessSession(cfg) as s:
         for doc_ref in documents:
@@ -723,16 +725,20 @@ async def vision_benchmark(
             pdf_bytes = await s.retrieve_document(doc.id, original=True)
 
             for model_name in effective_models:
-                result, elapsed, _status = await extract_with_vision(
+                result, elapsed, _status, timings = await extract_with_vision(
                     pdf_bytes=pdf_bytes,
                     config=cfg,
                     model=model_name,
                 )
 
                 model_times[model_name].append(elapsed)
+                if timings is not None:
+                    model_timings[model_name].append(timings)
 
                 if result is None:
                     click.echo(f"\n  {model_name} ({elapsed:.0f}s): FAILED")
+                    if timings is not None:
+                        click.echo(f"    {timings.summary()}")
                     fields = (
                         "correspondent",
                         "document_type",
@@ -771,6 +777,8 @@ async def vision_benchmark(
                 )
 
                 click.echo(f"\n  {model_name} ({elapsed:.0f}s):")
+                if timings is not None:
+                    click.echo(f"    {timings.summary()}")
                 line_parts: list[str] = []
                 for field_name, field_result in comparison.items():
                     part = f"{field_name}: {field_result.value.upper()}"
@@ -786,7 +794,11 @@ async def vision_benchmark(
     # Summary
     if len(documents) > 1 or len(effective_models) > 1:
         click.echo(f"\nSummary ({len(documents)} documents):")
-        click.echo(f"  {'Model':<25} | {'Accuracy':>15} | {'Avg Time':>10}")
+        click.echo(
+            f"  {'Model':<25} | {'Accuracy':>15} | {'Avg Time':>10} | "
+            f"{'Avg Load':>10} | {'Avg Prompt':>10} | {'Prompt t/s':>10} | "
+            f"{'Gen t/s':>8}"
+        )
         for model_name in effective_models:
             total = model_totals[model_name]
             matched = model_matches[model_name]
@@ -794,7 +806,23 @@ async def vision_benchmark(
             times = model_times[model_name]
             avg_time = sum(times) / len(times) if times else 0
             accuracy = f"{matched}/{total} ({pct:.0f}%)"
-            click.echo(f"  {model_name:<25} | {accuracy:>15} | {avg_time:>8.0f}s")
+
+            timings_list = model_timings[model_name]
+            count = len(timings_list) or 1
+            avg_load = sum(t.load_seconds for t in timings_list) / count
+            prompt_seconds = sum(t.prompt_eval_seconds for t in timings_list)
+            prompt_tokens = sum(t.prompt_tokens for t in timings_list)
+            eval_seconds = sum(t.eval_seconds for t in timings_list)
+            eval_tokens = sum(t.eval_tokens for t in timings_list)
+            avg_prompt = prompt_seconds / count
+            prompt_rate = prompt_tokens / prompt_seconds if prompt_seconds else 0
+            eval_rate = eval_tokens / eval_seconds if eval_seconds else 0
+
+            click.echo(
+                f"  {model_name:<25} | {accuracy:>15} | {avg_time:>8.0f}s | "
+                f"{avg_load:>8.1f}s | {avg_prompt:>8.1f}s | {prompt_rate:>10.0f} | "
+                f"{eval_rate:>8.1f}"
+            )
 
 
 @main.command("merge-correspondents")
