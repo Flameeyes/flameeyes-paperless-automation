@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import re
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -522,29 +522,190 @@ def _parse_document_ref(doc_ref: str, doc_url_pattern: re.Pattern[str]) -> int:
 @click.argument(
     "documents",
     type=str,
-    required=True,
+    required=False,
     nargs=-1,
 )
+@click.option(
+    "--correspondent", type=str, default=None, help="Filter by correspondent name."
+)
+@click.option(
+    "--document-type", type=str, default=None, help="Filter by document type name."
+)
+@click.option(
+    "--tag",
+    "tags",
+    type=str,
+    multiple=True,
+    help="Filter to documents with this tag (repeatable; all must match).",
+)
+@click.option(
+    "--exclude-tag",
+    "exclude_tags",
+    type=str,
+    multiple=True,
+    help="Exclude documents with this tag (repeatable; any match excludes).",
+)
+@click.option(
+    "--added-after",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents added on or after DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--added-before",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents added on or before DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--created-after",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents created on or after DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--created-before",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Filter to documents created on or before DATE (YYYY-MM-DD).",
+)
+@click.option(
+    "--exclude-identified / --no-exclude-identified",
+    is_flag=True,
+    default=True,
+    help="Whether to exclude documents already tagged as identified.",
+)
+@click.option(
+    "--require-scanned / --no-require-scanned",
+    is_flag=True,
+    default=True,
+    help="Whether to require documents to be tagged as scanned.",
+)
+@click.option(
+    "--only-inbox / --no-only-inbox",
+    is_flag=True,
+    default=True,
+    help="Whether to only process documents tagged with the configured inbox tag.",
+)
 @coro
-async def vision_identify(ctx: click.Context, *, documents: Sequence[str]) -> None:
-    """Identify documents using computer vision (VLM) extraction."""
+async def vision_identify(
+    ctx: click.Context,
+    *,
+    documents: Sequence[str],
+    correspondent: str | None,
+    document_type: str | None,
+    tags: Sequence[str],
+    exclude_tags: Sequence[str],
+    added_after: datetime | None,
+    added_before: datetime | None,
+    created_after: datetime | None,
+    created_before: datetime | None,
+    exclude_identified: bool,
+    require_scanned: bool,
+    only_inbox: bool,
+) -> None:
+    """Identify documents using computer vision (VLM) extraction.
+
+    Without document IDs, documents are searched for, by default restricted
+    to the inbox, requiring the scanned tag and excluding documents already
+    identified.
+    """
+    filter_opts = (
+        correspondent,
+        document_type,
+        tags,
+        exclude_tags,
+        added_after,
+        added_before,
+        created_after,
+        created_before,
+    )
+    has_filters = any(v is not None and v != () for v in filter_opts)
+
+    has_explicit_defaults = any(
+        ctx.get_parameter_source(name) != click.core.ParameterSource.DEFAULT
+        for name in ("exclude_identified", "require_scanned", "only_inbox")
+    )
+
+    if documents and (has_filters or has_explicit_defaults):
+        raise click.UsageError(
+            "Provide either document IDs/URLs or filter options, not both."
+        )
+
     execute = ctx.obj.execute
     cfg = Config.from_file()
 
-    doc_url_pattern = re.compile(rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?")
+    if not documents:
+        if only_inbox and "inbox" not in cfg.predefined_tags:
+            raise click.UsageError(
+                "Unable to use --only-inbox if no inbox tag is configured."
+            )
+
+        if require_scanned and "scanned" not in cfg.predefined_tags:
+            raise click.UsageError(
+                "Unable to use --require-scanned if no scanned tag is configured."
+            )
+
+    async def process(s: PaperlessSession, doc) -> None:
+        LOGGER.info(f"Found document: {doc.title}")
+        if identified_doc := await vision_identify_document(
+            execute=execute, session=s, doc=doc
+        ):
+            if execute:
+                await s.update_document(identified_doc)
+                LOGGER.info(f"Document '{doc.title}' updated.")
 
     async with PaperlessSession(cfg) as s:
-        for doc_ref in documents:
-            document_id = _parse_document_ref(doc_ref, doc_url_pattern)
-            doc = await s.lookup_document(document_id)
-            LOGGER.info(f"Found document: {doc.title}")
+        if documents:
+            doc_url_pattern = re.compile(
+                rf"^{cfg.url}/?documents/(?P<document_id>\d+)(/.*)?"
+            )
+            for doc_ref in documents:
+                document_id = _parse_document_ref(doc_ref, doc_url_pattern)
+                await process(s, await s.lookup_document(document_id))
+            return
 
-            if identified_doc := await vision_identify_document(
-                execute=execute, session=s, doc=doc
-            ):
-                if execute:
-                    await s.update_document(identified_doc)
-                    LOGGER.info(f"Document '{doc.title}' updated.")
+        correspondent_id = None
+        if correspondent is not None:
+            correspondent_id = (await s.lookup_correspondent(correspondent)).id
+
+        document_type_id = None
+        if document_type is not None:
+            document_type_id = (await s.lookup_document_type(document_type)).id
+
+        tag_names = list(tags)
+        excluded_tag_names = list(exclude_tags)
+
+        if only_inbox:
+            tag_names.append(cfg.predefined_tags["inbox"])
+        if require_scanned:
+            tag_names.append(cfg.predefined_tags["scanned"])
+        if exclude_identified:
+            for key in ("vision_identified", "identified"):
+                if key in cfg.predefined_tags:
+                    excluded_tag_names.append(cfg.predefined_tags[key])
+
+        tag_ids = {(await s.lookup_tag(name)).id for name in tag_names}
+        excluded_tag_ids = {
+            (await s.lookup_tag(name)).id for name in excluded_tag_names
+        }
+
+        def to_date(value: datetime | None) -> date | None:
+            return value.date() if value else None
+
+        doc_ids = await s.document_ids_by_filters(
+            correspondent_id=correspondent_id,
+            document_type_id=document_type_id,
+            tag_ids=tag_ids,
+            excluded_tag_ids=excluded_tag_ids,
+            added_after=to_date(added_after),
+            added_before=to_date(added_before),
+            created_after=to_date(created_after),
+            created_before=to_date(created_before),
+        )
+
+        for doc_id in doc_ids:
+            await process(s, await s.lookup_document(doc_id))
 
 
 @main.command("vision-identify-all")
