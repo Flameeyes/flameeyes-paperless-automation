@@ -350,13 +350,13 @@ def pdf_to_images(
     pdf_bytes: bytes, *, dpi: int = 150, max_pages: int = 2
 ) -> list[bytes]:
     """Render up to max_pages pages of a PDF as PNG bytes."""
-    import fitz
+    import pymupdf
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     images: list[bytes] = []
     for page_num in range(min(max_pages, doc.page_count)):
         page = doc.load_page(page_num)
-        mat = fitz.Matrix(dpi / 72, dpi / 72)
+        mat = pymupdf.Matrix(dpi / 72, dpi / 72)
         pix = page.get_pixmap(matrix=mat)
         images.append(pix.tobytes("png"))
     return images
